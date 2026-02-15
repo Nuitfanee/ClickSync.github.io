@@ -152,6 +152,46 @@
           }
         },
       },
+      ninjutso: {
+        power: {
+          sleepSeconds: Array.from({ length: 15 }, (_, i) => (i + 1) * 60),
+          debounceMs: [2, 5, 10],
+        },
+        sensor: {
+          angleDeg: { min: -30, max: 30, step: 1, hint: "Range -30 ~ 30" },
+          feel: { min: 0, max: 20, step: 1, unit: "", name: "LED Speed", sub: "Range 0 - 20" },
+        },
+        dpi: {
+          step: 1,
+        },
+        polling: {
+          basicHz: [1000, 2000, 4000, 8000],
+          advHz: [1000, 2000, 4000, 8000],
+        },
+        texts: {
+          landingTitle: "NINJUTSO",
+          landingCaption: "stare into the void to connect (NINJUTSO)",
+          lod: { code: "005 // Burst", title: "Burst Mode", desc: "Toggle burst mode" },
+          led: { code: "006 // Hyper Click", title: "Hyper Click", desc: "Toggle hyper click mode" },
+          perfMode: {
+            hp: { color: "#000000", text: "Standard mode." },
+            sport: { color: "#FF4500", text: "Esports mode with lower latency." },
+            oc: { color: "#4F46E5", text: "Overclock mode for max response." },
+          },
+          lights: {
+            dpi: [
+              { val: 0, label: "Static", cls: "atk-mode-0" },
+              { val: 1, label: "Marquee", cls: "atk-mode-1" },
+            ],
+            receiver: [
+              { val: 25, label: "25%", cls: "atk-mode-0" },
+              { val: 50, label: "50%", cls: "atk-mode-1" },
+              { val: 75, label: "75%", cls: "atk-mode-2" },
+              { val: 100, label: "100%", cls: "atk-mode-3" },
+            ],
+          },
+        },
+      },
     },
 
     utils: {
@@ -181,6 +221,7 @@
     const x = String(id || "").toLowerCase();
     if (x === "rapoo") return "rapoo";
     if (x === "atk") return "atk";
+    if (x === "ninjutso") return "ninjutso";
     if (x === "logitech") return "logitech";
     return "chaos";
   };
@@ -244,6 +285,7 @@
 
   const rapooTexts = window.AppConfig?.ranges?.rapoo?.texts || {};
   const atkTexts = window.AppConfig?.ranges?.atk?.texts || {};
+  const ninjutsoTexts = window.AppConfig?.ranges?.ninjutso?.texts || {};
 
   /**
    * 所有适配器共享的标准 Key 映射。
@@ -465,6 +507,22 @@
     return { x: qx, y: qy };
   };
 
+  const NINJUTSO_LED_BRIGHTNESS_LEVELS = [25, 50, 75, 100];
+  const nearestFromList = (raw, list, fallback = list?.[0]) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Array.isArray(list) || !list.length) return fallback;
+    return list.reduce((best, cur) => (Math.abs(cur - n) < Math.abs(best - n) ? cur : best), list[0]);
+  };
+  const toNinjutsoLedMode = (value) => {
+    const s = String(value || "").trim().toLowerCase();
+    if (s === "marquee") return "marquee";
+    if (s === "static") return "static";
+    return Number(value) === 1 ? "marquee" : "static";
+  };
+  const fromNinjutsoLedMode = (raw) => (toNinjutsoLedMode(raw) === "marquee" ? 1 : 0);
+  const toNinjutsoLedBrightness = (value) => nearestFromList(value, NINJUTSO_LED_BRIGHTNESS_LEVELS, 100);
+  const fromNinjutsoLedBrightness = (raw) => nearestFromList(raw, NINJUTSO_LED_BRIGHTNESS_LEVELS, 100);
+
   const BaseRapooProfile = {
     id: "rapoo",
     ui: {
@@ -530,6 +588,8 @@
       hasDpiColors: false,
       hasDpiLods: false,
       hasDpiAdvancedAxis: true,
+      hasSensorAngle: true,
+      hasSurfaceFeel: true,
       showHeightViz: true,
       hideSportPerfMode: false,
       hasLogitechAdvancedPanel: false,
@@ -602,6 +662,81 @@
     },
   };
 
+  const NinjutsoProfile = {
+    ...BaseRapooProfile,
+    id: "ninjutso",
+    ui: {
+      ...BaseRapooProfile.ui,
+      skinClass: "atk",
+      landingTitle: ninjutsoTexts.landingTitle,
+      landingCaption: ninjutsoTexts.landingCaption,
+      lod: ninjutsoTexts.lod,
+      led: ninjutsoTexts.led,
+      perfMode: ninjutsoTexts.perfMode,
+      lights: ninjutsoTexts.lights,
+    },
+    ranges: window.AppConfig?.ranges?.ninjutso,
+    keyMap: {
+      ...BaseRapooProfile.keyMap,
+      surfaceModePrimary: "burstEnabled",
+      surfaceModeSecondary: null,
+      primaryLedFeature: "hyperClick",
+      surfaceFeel: "ledSpeed",
+      keyScanningRate: null,
+      wirelessStrategyMode: null,
+      commProtocolMode: null,
+      sensorAngle: null,
+      dpiLightEffect: "ledMode",
+      receiverLightEffect: "ledBrightness",
+    },
+    transforms: {
+      ...BaseRapooProfile.transforms,
+      surfaceModePrimary: { write: (v) => !!v, read: readBool },
+      primaryLedFeature: { write: (v) => !!v, read: readBool },
+      surfaceFeel: {
+        write: (v) => clamp(Math.trunc(Number(v) || 0), 0, 20),
+        read: (raw) => {
+          const n = toNumber(raw);
+          if (!Number.isFinite(n)) return undefined;
+          return clamp(Math.trunc(n), 0, 20);
+        },
+      },
+      dpiLightEffect: {
+        write: (v) => toNinjutsoLedMode(v),
+        read: (raw) => fromNinjutsoLedMode(raw),
+      },
+      receiverLightEffect: {
+        write: (v) => toNinjutsoLedBrightness(v),
+        read: (raw) => fromNinjutsoLedBrightness(raw),
+      },
+    },
+    features: {
+      ...BaseRapooProfile.features,
+      hasPrimarySurfaceToggle: true,
+      hasSecondarySurfaceToggle: false,
+      hasPrimaryLedFeature: true,
+      hasPerformanceMode: true,
+      hasMotionSync: false,
+      hasLinearCorrection: false,
+      hasRippleControl: false,
+      hasKeyScanRate: false,
+      hasWirelessStrategy: false,
+      hasCommProtocol: false,
+      hasLongRange: false,
+      hasAtkLights: true,
+      hasDpiColors: false,
+      hasDpiLods: false,
+      hasDpiAdvancedAxis: false,
+      hasSensorAngle: false,
+      hasSurfaceFeel: true,
+      showHeightViz: false,
+      keymapButtonCount: 5,
+      supportsBatteryRequest: true,
+      batteryPollMs: 60000,
+      batteryPollTag: "60s",
+    },
+  };
+
   const ChaosProfile = {
     id: "chaos",
     ui: {},
@@ -660,7 +795,10 @@
       hasLongRange: false,
       hasAtkLights: false,
       hasDpiColors: false,
+      hasDpiLods: false,
       hasDpiAdvancedAxis: false,
+      hasSensorAngle: true,
+      hasSurfaceFeel: true,
       showHeightViz: false,
       hideSportPerfMode: false,
       supportsBatteryRequest: true,
@@ -854,6 +992,7 @@
     chaos: ChaosProfile,
     rapoo: RapooProfile,
     atk: AtkProfile,
+    ninjutso: NinjutsoProfile,
     logitech: LogitechProfile,
   };
 
@@ -883,6 +1022,7 @@
     chaos: createAdapter(DEVICE_PROFILES.chaos),
     rapoo: createAdapter(DEVICE_PROFILES.rapoo),
     atk: createAdapter(DEVICE_PROFILES.atk),
+    ninjutso: createAdapter(DEVICE_PROFILES.ninjutso),
     logitech: createAdapter(DEVICE_PROFILES.logitech),
   };
 
@@ -1081,6 +1221,70 @@
   function applySelectOptions(selectEl, values, labelFn) {
     if (!selectEl || !Array.isArray(values)) return;
     selectEl.innerHTML = buildSelectOptions(values, labelFn);
+  }
+
+  const PERF_LABEL_MAP = Object.freeze({
+    low: "LOW POWER",
+    hp: "STANDARD",
+    standard: "STANDARD",
+    sport: "COMPETITIVE",
+    oc: "OVERCLOCK",
+  });
+
+  const PERF_DOM_MODE_MAP = Object.freeze({
+    low: "eco",
+    hp: "std",
+    standard: "std",
+    sport: "comp",
+    oc: "oc",
+  });
+
+  function resolveEffectivePerfModes({ ui, features }) {
+    const perfModeConfig = (ui?.perfMode && typeof ui.perfMode === "object") ? ui.perfMode : null;
+    if (!perfModeConfig) return null;
+    const perfModes = Object.keys(perfModeConfig).map((v) => String(v).trim()).filter(Boolean);
+    if (!perfModes.length) return null;
+    return perfModes.filter((mode) => !(features?.hideSportPerfMode && mode === "sport"));
+  }
+
+  function syncPerfModeRadios(doc, perfModes) {
+    if (!Array.isArray(perfModes) || !perfModes.length) return null;
+    const currentChecked = String(doc.querySelector('input[name="perfMode"]:checked')?.value || "");
+    const fallbackPerf = perfModes.includes("hp") ? "hp" : perfModes[0];
+    const selectedPerfMode = perfModes.includes(currentChecked) ? currentChecked : fallbackPerf;
+    const hiddenHost = doc.querySelector("#basicMonolith .basicHiddenControls") || doc.body || doc.documentElement;
+    const radios = Array.from(doc.querySelectorAll('input[name="perfMode"]'));
+    radios.forEach((radio) => {
+      if (!perfModes.includes(String(radio.value || ""))) {
+        radio.remove();
+      }
+    });
+    perfModes.forEach((mode) => {
+      let radio = doc.querySelector(`input[name="perfMode"][value="${mode}"]`);
+      if (!radio) {
+        radio = doc.createElement("input");
+        radio.type = "radio";
+        radio.name = "perfMode";
+        radio.value = mode;
+        hiddenHost?.appendChild(radio);
+      }
+      radio.checked = mode === selectedPerfMode;
+    });
+    return selectedPerfMode;
+  }
+
+  function renderPerfModeItems(basicModeColumn, perfModes, selectedPerfMode) {
+    if (!basicModeColumn || !Array.isArray(perfModes) || !perfModes.length) return false;
+    const activePerf = selectedPerfMode || (perfModes.includes("hp") ? "hp" : perfModes[0]);
+    basicModeColumn.innerHTML = perfModes
+      .map((mode) => {
+        const active = mode === activePerf ? " active" : "";
+        const label = PERF_LABEL_MAP[mode] || mode.toUpperCase();
+        const modeTag = PERF_DOM_MODE_MAP[mode] || mode;
+        return `<div class="basicItem${active}" role="button" tabindex="0" data-perf="${mode}" data-mode="${modeTag}">${label}<div class="basicAnchor"></div></div>`;
+      })
+      .join("");
+    return true;
   }
 
   function ensureBasicFooterVariantStyle(docRef) {
@@ -1365,11 +1569,32 @@
       return;
     }
 
+    const hostDoc = doc?.nodeType === 9 ? doc : (doc?.ownerDocument || document);
+    const bodyEl = hostDoc?.body || document.body;
+    if (bodyEl) {
+      const resolvedDeviceClass = `device-${String(adapter?.id || deviceId || "").trim().toLowerCase()}`;
+      const requestedSkin = String(ui?.skinClass || "").trim().toLowerCase();
+      const requestedSkinClass = requestedSkin ? `device-${requestedSkin}` : "";
+      const prevSkinClass = String(bodyEl.dataset.variantSkinClass || "");
+      if (prevSkinClass && prevSkinClass !== resolvedDeviceClass) {
+        bodyEl.classList.remove(prevSkinClass);
+      }
+      if (requestedSkinClass && requestedSkinClass !== resolvedDeviceClass) {
+        bodyEl.classList.add(requestedSkinClass);
+        bodyEl.dataset.variantSkinClass = requestedSkinClass;
+      } else {
+        bodyEl.removeAttribute("data-variant-skin-class");
+      }
+    }
+
     const landingLayer = doc.getElementById("landing-layer");
     const landingCaption = landingLayer?.querySelector(".caption");
     const verticalTitle = landingLayer?.querySelector(".vertical-title");
     if (verticalTitle && ui?.landingTitle) verticalTitle.textContent = ui.landingTitle;
     if (landingCaption && ui?.landingCaption) landingCaption.textContent = ui.landingCaption;
+
+    const effectivePerfModes = resolveEffectivePerfModes({ ui, features });
+    const selectedPerfMode = syncPerfModeRadios(doc, effectivePerfModes);
 
     const wiredPollingRates =
       (Array.isArray(cfg?.polling?.wiredHz) && cfg.polling.wiredHz.length)
@@ -1406,6 +1631,8 @@
           return `<div class="basicItem${active}" role="button" tabindex="0" data-hz="${hz}">${hz} Hz<div class="basicAnchor"></div></div>`;
         })
         .join("");
+    } else if (basicModeColumn && renderPerfModeItems(basicModeColumn, effectivePerfModes, selectedPerfMode)) {
+      // mode list rendered from unified perf mode resolver
     } else if (basicModeColumn) {
       restoreInnerHtml(basicModeColumn, "basicModeColumn");
     }
@@ -1472,6 +1699,14 @@
 
     const b6 = doc.getElementById("bit6");
     const b6Item = b6?.closest("label.advShutterItem");
+    const bit1 = doc.getElementById("bit1");
+    const bit1Item = bit1?.closest("label.advShutterItem");
+    const bit2 = doc.getElementById("bit2");
+    const bit2Item = bit2?.closest("label.advShutterItem");
+    const bit3 = doc.getElementById("bit3");
+    const bit3Item = bit3?.closest("label.advShutterItem");
+    const sensorAngleInput = doc.getElementById("angleInput");
+    const angleCard = sensorAngleInput?.closest(".slider-card");
 
     const rapooPollingCycle = doc.getElementById("rapooPollingCycle");
     const dpiAdvancedMeta = doc.getElementById("dpiAdvancedMeta");
@@ -1550,8 +1785,17 @@
 
     if (lodItem) lodItem.style.display = features.hasPrimarySurfaceToggle ? "" : "none";
     if (ledItem) ledItem.style.display = features.hasPrimaryLedFeature ? "" : "none";
+    if (bit1Item) bit1Item.style.display = features.hasMotionSync ? "" : "none";
+    if (bit2Item) bit2Item.style.display = features.hasLinearCorrection ? "" : "none";
+    if (bit3Item) bit3Item.style.display = features.hasRippleControl ? "" : "none";
     if (b6Item) b6Item.style.display = features.hasSecondarySurfaceToggle ? "" : "none";
     if (rapooPollingCycle) rapooPollingCycle.style.display = features.hasKeyScanRate ? "block" : "none";
+    if (angleCard) {
+      if (angleCard.dataset.__orig_display == null) {
+        angleCard.dataset.__orig_display = String(angleCard.style.display ?? "");
+      }
+      angleCard.style.display = features.hasSensorAngle === false ? "none" : (angleCard.dataset.__orig_display || "");
+    }
     if (dpiAdvancedMeta) {
       if (dpiAdvancedMeta.dataset.__orig_display == null) {
         dpiAdvancedMeta.dataset.__orig_display = String(dpiAdvancedMeta.style.display ?? "");
@@ -1601,9 +1845,6 @@
       });
     }
     applyKeymapVariant({ doc, ui, deviceName });
-
-    const sportItem = doc.querySelector('.basicItem[data-perf="sport"]');
-    if (sportItem) sportItem.style.display = features.hideSportPerfMode ? "none" : "";
 
     const sleepSeconds = cfg?.power?.sleepSeconds;
     if (sleepSel && Array.isArray(sleepSeconds)) {

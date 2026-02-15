@@ -18,7 +18,7 @@
 
   const STORAGE_KEY = "device.selected";
   const LAST_HID_KEY = "mouse.lastHid";
-  const VALID = new Set(["chaos", "rapoo", "atk", "logitech"]);
+  const VALID = new Set(["chaos", "rapoo", "atk", "ninjutso", "logitech"]);
   const ATK_VENDOR_IDS = new Set([0x373b, 0x3710]);
 
   function _isRapooDevice(d) {
@@ -66,6 +66,18 @@
     );
   }
 
+  function _isNinjutsoDevice(d) {
+    return (
+      d?.vendorId === 0x093a &&
+      d?.productId === 0xeb02 &&
+      Array.isArray(d?.collections) &&
+      d.collections.some((c) => {
+        const page = Number(c?.usagePage);
+        return page === 0xff01 || page === 0xff00;
+      })
+    );
+  }
+
   /**
    * DEVICE_REGISTRY 定义硬件指纹以识别设备类型。
    * 目的：在不依赖 UI 的前提下完成设备类型识别，
@@ -89,6 +101,16 @@
       filters: [
         { vendorId: 0x373b, usagePage: 0xff02, usage: 0x0002 },
         { vendorId: 0x3710, usagePage: 0xff02, usage: 0x0002 },
+      ],
+    },
+    {
+      type: "ninjutso",
+      label: "NINJUTSO",
+      match: _isNinjutsoDevice,
+      filters: [
+        { vendorId: 0x093a, productId: 0xeb02, usagePage: 0xff01 },
+        { vendorId: 0x093a, productId: 0xeb02, usagePage: 0xff00 },
+        { vendorId: 0x093a, productId: 0xeb02 },
       ],
     },
     {
@@ -233,6 +255,7 @@
     const list = Array.isArray(devices) ? devices : [];
     if (type === "rapoo") return list.filter(_isRapooDevice);
     if (type === "atk") return list.filter(_isAtkDevice);
+    if (type === "ninjutso") return list.filter(_isNinjutsoDevice);
     if (type === "chaos") return list.filter(_isChaosDevice);
     if (type === "logitech") return list.filter(_isLogitechDevice);
     return [];
@@ -240,7 +263,7 @@
 
   function _filterKnownDevices(devices) {
     const list = Array.isArray(devices) ? devices : [];
-    return list.filter((d) => _isRapooDevice(d) || _isAtkDevice(d) || _isChaosDevice(d) || _isLogitechDevice(d));
+    return list.filter((d) => _isRapooDevice(d) || _isAtkDevice(d) || _isNinjutsoDevice(d) || _isChaosDevice(d) || _isLogitechDevice(d));
   }
 
   /**
@@ -403,6 +426,8 @@
       ? "./protocol_api_rapoo.js"
       : (device === "atk")
         ? "./protocol_api_atk.js"
+        : (device === "ninjutso")
+          ? "./protocol_api_ninjutso.js"
         : (device === "logitech")
           ? "./protocol_api_logitech.js"
           : "./protocol_api_chaos.js";

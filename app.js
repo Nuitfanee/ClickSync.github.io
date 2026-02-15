@@ -1999,7 +1999,8 @@ function lockEl(el) {
     if (!root) return;
     __refreshBasicItemRefs(root);
 
-    const perf = document.querySelector('input[name="perfMode"]:checked')?.value || "low";
+    const fallbackPerf = __basicModeConfig?.low ? "low" : (__basicModeConfig?.hp ? "hp" : "low");
+    const perf = document.querySelector('input[name="perfMode"]:checked')?.value || fallbackPerf;
     const wiredHz = document.getElementById("pollingSelect")?.value || "1000";
     const wirelessHz = document.getElementById("pollingSelectWireless")?.value || wiredHz;
     const hz = wiredHz;
@@ -2035,7 +2036,7 @@ function lockEl(el) {
     }
 
     const st = document.getElementById("basicStatusText");
-    const cfg = __basicModeConfig[perf] || __basicModeConfig.low;
+    const cfg = __basicModeConfig[perf] || __basicModeConfig.low || __basicModeConfig.hp || __defaultPerfConfig.hp;
     if (st) {
       st.textContent = __hideBasicFooterSecondaryText ? "" : cfg.text;
     }
@@ -3463,10 +3464,11 @@ function applyCapabilitiesToUi(cap) {
    */
   function buildDpiMaxOptions(maxDpi) {
     const upper = Math.max(2000, Math.trunc(Number(maxDpi) || 26000));
-    const capUpper = Math.min(26000, upper);
+    const capUpper = Math.min(DPI_ABS_MAX, upper);
     const out = Array.from(new Set(
       DPI_MAX_PRESET_OPTIONS
         .map((v) => Math.trunc(Number(v)))
+        .map((v) => (v === 26000 ? capUpper : v))
         .filter((v) => Number.isFinite(v) && v >= 2000 && v <= capUpper)
     )).sort((a, b) => a - b);
     return out.length ? out : [2000];
@@ -3488,6 +3490,37 @@ function applyCapabilitiesToUi(cap) {
       .map((v) => `<option value="${v}">${v}</option>`)
       .join("");
     safeSetValue(el, defVal);
+  }
+
+  function ensureDpiMaxRangeByValue(rawValue) {
+    const observed = Math.trunc(Number(rawValue));
+    if (!Number.isFinite(observed) || observed <= 0) return false;
+
+    const cappedObserved = Math.max(DPI_ABS_MIN, Math.min(DPI_ABS_MAX, observed));
+    const currentMax = Number(dpiMaxSelect?.value ?? DPI_MAX_DEFAULT);
+    if (Number.isFinite(currentMax) && cappedObserved <= currentMax) return false;
+
+    if (cappedObserved > DPI_UI_MAX) {
+      DPI_UI_MAX = Math.min(DPI_ABS_MAX, cappedObserved);
+      const prevCap = getCapabilities();
+      __capabilities = {
+        ...(prevCap && typeof prevCap === "object" ? prevCap : {}),
+        maxDpi: Math.max(Number(prevCap?.maxDpi) || 0, DPI_UI_MAX),
+      };
+    }
+
+    DPI_MAX_OPTIONS = buildDpiMaxOptions(DPI_UI_MAX);
+    const pickedMax = DPI_MAX_OPTIONS.find((v) => v >= cappedObserved)
+      ?? DPI_MAX_OPTIONS[DPI_MAX_OPTIONS.length - 1]
+      ?? cappedObserved;
+
+    if (dpiMaxSelect) {
+      fillSelect(dpiMaxSelect, DPI_MAX_OPTIONS, pickedMax);
+    }
+
+    normalizeDpiMinMax();
+    applyDpiRangeToRows();
+    return true;
   }
 
   /**
@@ -5279,7 +5312,6 @@ const defaultMap = {
        const arr = cfg?.buttonMappings;
 
        if (!arr || !Array.isArray(arr) || arr.length < 6) return;
-
        for (let i = 1; i <= 6; i++) {
          const it = arr[i - 1];
          if (!it) continue;
@@ -5961,6 +5993,21 @@ function openDrawer(btn) {
     );
     let hasAxisDiff = false;
 
+    let observedDpiMax = NaN;
+    for (let i = 0; i < dpiSlotCap; i++) {
+      const vx = Number(slotsX[i]);
+      const vy = Number(slotsY[i]);
+      if (Number.isFinite(vx)) {
+        observedDpiMax = Number.isFinite(observedDpiMax) ? Math.max(observedDpiMax, vx) : vx;
+      }
+      if (Number.isFinite(vy)) {
+        observedDpiMax = Number.isFinite(observedDpiMax) ? Math.max(observedDpiMax, vy) : vy;
+      }
+    }
+    if (Number.isFinite(observedDpiMax)) {
+      ensureDpiMaxRangeByValue(observedDpiMax);
+    }
+
 
     const supportsDpiColors = hasFeature("hasDpiColors");
     const colors = supportsDpiColors ? (cfg.dpiColors || []) : [];
@@ -6038,7 +6085,8 @@ function openDrawer(btn) {
     if (debounceMs != null) safeSetValue($("#debounceSelect"), debounceMs);
 
     if (__hasPerformanceMode) {
-      const perfMode = readMerged("performanceMode") || "low";
+      const fallbackPerfMode = __basicModeConfig?.low ? "low" : (__basicModeConfig?.hp ? "hp" : "low");
+      const perfMode = readMerged("performanceMode") || fallbackPerfMode;
       setRadio("perfMode", perfMode);
     }
 

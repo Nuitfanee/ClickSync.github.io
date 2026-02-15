@@ -1527,18 +1527,30 @@ try {
      */
     async setButtonMappingBySelect(btnIndex, label) {
       if (!this.device?.opened) await this.open();
-      
-      const action = KEYMAP_ACTIONS[label];
-      if (!action) return;
 
-      // UI 索引与设备寄存器索引的映射关系
-      // UI: 4(Forward) -> Dev: 4(Forward Register)
-      // UI: 5(Back)    -> Dev: 3(Back Register)
-      // 数组下标 3(UI Forward) -> 值 4
-      // 数组下标 4(UI Back)    -> 值 3
-      const devIndexMap = [0, 1, 2, 4, 3, 5]; 
-      const rawIdx = btnIndex - 1;
-      const devIdx = devIndexMap[rawIdx] !== undefined ? devIndexMap[rawIdx] : rawIdx;
+      const uiBtn = clampInt(btnIndex, 1, 6);
+      if (uiBtn !== Number(btnIndex)) {
+        throw new ProtocolError(`invalid button index: ${btnIndex}`, "BAD_PARAM", { btnIndex });
+      }
+
+      const action = KEYMAP_ACTIONS[label];
+      if (!action) {
+        throw new ProtocolError(`unknown key action label: ${label}`, "BAD_PARAM", { label });
+      }
+
+      // UI 为 1-based，设备寄存器索引为 0-based，且 Forward/Back 在设备侧顺序互换。
+      const uiToDevIndex = Object.freeze({
+        1: 0,
+        2: 1,
+        3: 2,
+        4: 4,
+        5: 3,
+        6: 5,
+      });
+      const devIdx = uiToDevIndex[uiBtn];
+      if (!Number.isFinite(devIdx)) {
+        throw new ProtocolError(`unsupported button index: ${uiBtn}`, "FEATURE_UNSUPPORTED", { btnIndex: uiBtn });
+      }
 
       // Action4 地址
       const addrAction4 = REGS.KEYMAP_BASE + devIdx * 4;
@@ -1548,16 +1560,16 @@ try {
       const cmds = [];
 
       if (action.type === "mouse") {
-        // 纯鼠标映射：只写 Action4
-        // 构造 Action4: [01, funckey, 00, ck]
-        const w = TRANSFORMERS.action4Bytes({ type: 0x01, code: action.funckey });
+        // 鼠标动作优先 funckey；若 funckey 为 0 则回退到 keycode（兼容 DPI循环）
+        const mouseCode = toU8(action.funckey || action.keycode || 0);
+        const w = TRANSFORMERS.action4Bytes({ type: 0x01, code: mouseCode });
         cmds.push({ hex: ProtocolCodec.write(addrAction4, w) });
       } else {
         // 键盘/多媒体：写 KeySeq + 绑定 Action4
         let tag = 0x81; // Keyboard
         if (action.type === "system") tag = 0x82; // Consumer
         if (action.type === "modifier") tag = 0x80; // Modifier
-        const usage = action.keycode;
+        const usage = toU8(action.keycode);
 
         // KeySeq Block (10B)
         const u8 = new Uint8Array(10).fill(0);
@@ -1566,7 +1578,7 @@ try {
         u8[2] = usage;
         u8[4] = tag - 0x40; // Tag2
         u8[5] = usage;      // Usage2
-        
+
         // Tail Algo
         const sum = (tag & 0x0F) + usage;
         u8[7] = (0x93 - 2 * sum) & 0xFF;
@@ -1580,6 +1592,16 @@ try {
       }
 
       await this._driver.runSequence(cmds);
+
+      if (!Array.isArray(this._cfg?.buttonMappings)) {
+        this._cfg.buttonMappings = Array.from({ length: 6 }, () => ({ funckey: 0, keycode: 0 }));
+      }
+      while (this._cfg.buttonMappings.length < 6) this._cfg.buttonMappings.push({ funckey: 0, keycode: 0 });
+      this._cfg.buttonMappings[uiBtn - 1] = {
+        funckey: toU8(action.funckey),
+        keycode: clampInt(action.keycode, 0, 0xffff),
+      };
+      this._emitConfig();
     }
 
 async setBatchFeatures(payload) {
