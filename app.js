@@ -66,6 +66,17 @@
    * @returns {any} 返回结果。
    */
   const hasFeature = (key) => !!adapterFeatures[key];
+  const hasOwnFeature = (key) => Object.prototype.hasOwnProperty.call(adapterFeatures || {}, key);
+  const hasDpiLightCycle = hasOwnFeature("hasDpiLightCycle")
+    ? !!adapterFeatures.hasDpiLightCycle
+    : !!adapterFeatures.hasAtkLights;
+  const hasReceiverLightCycle = hasOwnFeature("hasReceiverLightCycle")
+    ? !!adapterFeatures.hasReceiverLightCycle
+    : !!adapterFeatures.hasAtkLights;
+  const hasStaticLedColorPanel = !!adapterFeatures.hasStaticLedColorPanel;
+  const STATIC_LED_COLOR_PANEL_ID = "deviceStaticLedColorPanel";
+  const STATIC_LED_COLOR_FALLBACK = "#11119A";
+  let __staticLedColorValue = STATIC_LED_COLOR_FALLBACK;
 
 
   const resolvedDeviceId = adapter?.id || DEVICE_ID;
@@ -347,6 +358,7 @@
           return;
       }
 
+      rotateCycleCrosshair(container);
       animateCycleVisual(container, opt.val, opt.label, colorClass, syncForm);
   }
 
@@ -356,7 +368,7 @@
    * @returns {any} 返回结果。
    */
   function initAtkLightCycles() {
-      if (!hasFeature("hasAtkLights")) return;
+      if (!hasDpiLightCycle && !hasReceiverLightCycle) return;
       /**
        * 处理bind、cycle逻辑。
        * 目的：统一处理bind、cycle相关流程，保证行为一致。
@@ -370,6 +382,7 @@
           if (!btn) return;
 
           btn.addEventListener('click', () => {
+              if (btn.getAttribute("aria-disabled") === "true") return;
               const datasetVal = Number(btn.dataset.value);
               const firstVal = Number(options[0]?.val);
               const cur = Number.isFinite(datasetVal)
@@ -382,14 +395,19 @@
 
               btn.dataset.value = String(nextVal);
               updateAtkCycleUI(id, nextVal, options, true);
+              syncAdvancedPanelUi();
 
               enqueueDevicePatch({ [key]: nextVal });
           });
       };
 
 
-      bindCycle('atkDpiLightCycle', 'dpiLightEffect', ATK_DPI_LIGHT_OPTS);
-      bindCycle('atkReceiverLightCycle', 'receiverLightEffect', ATK_RX_LIGHT_OPTS);
+      if (hasDpiLightCycle) {
+        bindCycle('atkDpiLightCycle', 'dpiLightEffect', ATK_DPI_LIGHT_OPTS);
+      }
+      if (hasReceiverLightCycle) {
+        bindCycle('atkReceiverLightCycle', 'receiverLightEffect', ATK_RX_LIGHT_OPTS);
+      }
   }
 
 
@@ -2454,6 +2472,198 @@ function lockEl(el) {
     return Math.max(a, Math.min(b, n));
   }
 
+  function __setInlineStyleWithCache(el, styleKey, valueOrNull) {
+    if (!el) return;
+    const cacheKey = `__orig_style_${styleKey}`;
+    if (el.dataset[cacheKey] == null) {
+      el.dataset[cacheKey] = String(el.style[styleKey] ?? "");
+    }
+    if (valueOrNull == null) {
+      el.style[styleKey] = el.dataset[cacheKey] || "";
+      return;
+    }
+    el.style[styleKey] = String(valueOrNull);
+  }
+
+  function __setCycleLocked(container, locked) {
+    if (!container) return;
+    const isLocked = !!locked;
+    container.classList.toggle("is-disabled", isLocked);
+    container.setAttribute("aria-disabled", isLocked ? "true" : "false");
+    __setInlineStyleWithCache(container, "pointerEvents", isLocked ? "none" : null);
+    __setInlineStyleWithCache(container, "opacity", isLocked ? "0.62" : null);
+    if (container.dataset.__orig_tabindex == null) {
+      container.dataset.__orig_tabindex = String(container.getAttribute("tabindex") ?? "");
+    }
+    if (isLocked) {
+      container.setAttribute("tabindex", "-1");
+      return;
+    }
+    const prevTabindex = container.dataset.__orig_tabindex;
+    if (prevTabindex === "") container.removeAttribute("tabindex");
+    else container.setAttribute("tabindex", prevTabindex);
+  }
+
+  function __setSliderLocked(inputEl, locked) {
+    if (!inputEl) return;
+    const isLocked = !!locked;
+    inputEl.disabled = isLocked;
+    __setInlineStyleWithCache(inputEl, "cursor", isLocked ? "not-allowed" : null);
+    const card = inputEl.closest(".slider-card");
+    if (!card) return;
+    card.classList.toggle("is-disabled", isLocked);
+    __setInlineStyleWithCache(card, "opacity", isLocked ? "0.62" : null);
+  }
+
+  function __readCycleNumericValue(container, fallbackValue = 0) {
+    const raw = Number(container?.dataset?.value);
+    if (Number.isFinite(raw)) return raw;
+    const fb = Number(fallbackValue);
+    return Number.isFinite(fb) ? fb : 0;
+  }
+
+  function __normalizeHexColorUi(raw, fallback = STATIC_LED_COLOR_FALLBACK) {
+    const fb = String(fallback || STATIC_LED_COLOR_FALLBACK).trim().toUpperCase();
+    let s = String(raw == null ? "" : raw).trim().toUpperCase();
+    if (!s) return fb;
+    if (!s.startsWith("#")) s = `#${s}`;
+    return /^#[0-9A-F]{6}$/.test(s) ? s : fb;
+  }
+
+  function __getStaticLedColorUiMeta() {
+    const meta = adapter?.ui?.staticLedColor;
+    if (meta && typeof meta === "object") return meta;
+    return {
+      code: "009 // Static Color",
+      title: "Static LED Color",
+      desc: "Click to choose static mode color",
+    };
+  }
+
+  function __applyStaticLedColorPanelValue(panelEl, rawColor) {
+    const panel = panelEl || document.getElementById(STATIC_LED_COLOR_PANEL_ID);
+    if (!panel) return;
+    const color = __normalizeHexColorUi(rawColor, __staticLedColorValue);
+    __staticLedColorValue = color;
+    panel.dataset.value = color;
+    panel.dataset.color = color;
+    panel.classList.add("is-selected");
+    const textEl = panel.querySelector(".cycle-text");
+    if (textEl) textEl.textContent = color;
+    const baseLayer = panel.querySelector(".shutter-bg-base");
+    const nextLayer = panel.querySelector(".shutter-bg-next");
+    if (baseLayer) baseLayer.style.backgroundColor = color;
+    if (nextLayer) nextLayer.style.backgroundColor = color;
+  }
+
+  function ensureStaticLedColorPanel() {
+    const existing = document.getElementById(STATIC_LED_COLOR_PANEL_ID);
+    if (!hasStaticLedColorPanel) {
+      existing?.remove?.();
+      return null;
+    }
+    const rightCol = document.getElementById("advancedLegacyRight");
+    const shutterList = rightCol?.querySelector(".shutter-list");
+    if (!shutterList) return null;
+
+    let panel = existing;
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.className = "advShutterItem rapoo-polling-item";
+      panel.id = STATIC_LED_COLOR_PANEL_ID;
+      panel.setAttribute("role", "button");
+      panel.setAttribute("tabindex", "0");
+      panel.setAttribute("aria-label", "Static LED color");
+      panel.setAttribute("data-color-picker-anchor", "1");
+      panel.innerHTML = `
+        <div class="shutter-row">
+          <div class="shutter-bg-base"></div>
+          <div class="shutter-bg-next"></div>
+          <div class="border-deco"></div>
+          <div class="content-layer">
+            <div class="meta">
+              <span class="label-code"></span>
+              <span class="label-title"></span>
+              <span class="label-desc"></span>
+            </div>
+            <div class="status-indicator">
+              <span class="status-text cycle-text">#11119A</span>
+              <div class="crosshair"></div>
+            </div>
+          </div>
+        </div>
+      `;
+      shutterList.appendChild(panel);
+
+      const openPicker = () => {
+        if (panel.getAttribute("aria-disabled") === "true") return;
+        const picker = initColorPicker();
+        const current = __normalizeHexColorUi(panel.dataset.color, __staticLedColorValue);
+        picker.open(panel, current, (nextHex) => {
+          const normalized = __normalizeHexColorUi(nextHex, current);
+          __applyStaticLedColorPanelValue(panel, normalized);
+          enqueueDevicePatch({ staticLedColor: normalized });
+        });
+      };
+      panel.addEventListener("click", openPicker);
+      panel.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openPicker();
+      });
+    }
+
+    const meta = __getStaticLedColorUiMeta();
+    const codeEl = panel.querySelector(".label-code");
+    const titleEl = panel.querySelector(".label-title");
+    const descEl = panel.querySelector(".label-desc");
+    if (codeEl) codeEl.textContent = meta.code || "";
+    if (titleEl) titleEl.textContent = meta.title || "";
+    if (descEl) descEl.textContent = meta.desc || "";
+    const order = Number(adapter?.ui?.advancedOrders?.staticLedColor);
+    panel.style.order = Number.isFinite(order) ? String(order) : "";
+    __applyStaticLedColorPanelValue(panel, panel.dataset.color || __staticLedColorValue);
+    return panel;
+  }
+
+  function syncAdvancedDependencyUi() {
+    const ledMasterBySecondary = hasFeature("ledMasterBySecondarySurface");
+    const ledMasterOn = !ledMasterBySecondary || !!document.getElementById("bit6")?.checked;
+    const lockByLedMaster = !ledMasterOn;
+
+    const dpiCycle = document.getElementById("atkDpiLightCycle");
+    const receiverCycle = document.getElementById("atkReceiverLightCycle");
+    const receiverSlider = document.getElementById("angleInput");
+    const feelInput = document.getElementById("feelInput");
+    const staticLedColorPanel = ensureStaticLedColorPanel();
+
+    const lockDpiCycle = hasFeature("ledMasterGatesDpiLightEffect") && lockByLedMaster;
+    const lockReceiver = hasFeature("ledMasterGatesReceiverLightEffect") && lockByLedMaster;
+
+    const needFeelMode = hasFeature("surfaceFeelRequiresDpiLightEffect");
+    const requiredModeRaw = Number(adapter?.features?.surfaceFeelRequiredDpiLightValue);
+    const requiredMode = Number.isFinite(requiredModeRaw) ? requiredModeRaw : 1;
+    const currentMode = __readCycleNumericValue(dpiCycle, Number(ATK_DPI_LIGHT_OPTS?.[0]?.val));
+    const modeReady = !needFeelMode || currentMode === requiredMode;
+
+    const lockFeelByMaster = hasFeature("ledMasterGatesSurfaceFeel") && lockByLedMaster;
+    const lockFeelByMode = needFeelMode && !modeReady;
+    const lockFeel = lockFeelByMaster || lockFeelByMode;
+    const needStaticColorMode = hasFeature("staticLedColorRequiresDpiLightEffect");
+    const staticModeRaw = Number(adapter?.features?.staticLedColorRequiredDpiLightValue);
+    const staticMode = Number.isFinite(staticModeRaw) ? staticModeRaw : 0;
+    const staticColorModeReady = !needStaticColorMode || currentMode === staticMode;
+    const lockStaticColorByMaster = hasFeature("ledMasterGatesStaticLedColor") && lockByLedMaster;
+    const lockStaticColorByMode = needStaticColorMode && !staticColorModeReady;
+    const lockStaticColor = lockStaticColorByMaster || lockStaticColorByMode;
+
+    __setCycleLocked(dpiCycle, lockDpiCycle);
+    __setCycleLocked(receiverCycle, lockReceiver);
+    __setCycleLocked(staticLedColorPanel, lockStaticColor);
+    __setSliderLocked(receiverSlider, lockReceiver);
+    __setSliderLocked(feelInput, lockFeel);
+  }
+
   /**
    * 内部同步滑块。
    * 目的：同步滑块与数值输入，避免 UI 与值不一致。
@@ -2632,8 +2842,10 @@ function lockEl(el) {
       }
     }
 
+    __applyStaticLedColorPanelValue(ensureStaticLedColorPanel(), __staticLedColorValue);
 
     updateSleepFins();
+    syncAdvancedDependencyUi();
     syncLogitechAdvancedUi();
   }
 
@@ -2837,6 +3049,7 @@ function lockEl(el) {
     const root = document.getElementById("advancedPanel");
     if (!root) return;
     __advancedPanelInited = true;
+    ensureStaticLedColorPanel();
 
     const sleepSel = document.getElementById("sleepSelect");
     const sleepInput = document.getElementById("sleepInput");
@@ -4249,7 +4462,8 @@ function applyCapabilitiesToUi(cap) {
 
 
     document.addEventListener("pointerdown", (e) => {
-      if (wrap.classList.contains("open") && !wrap.contains(e.target) && !e.target.closest(".dpiSelectBtn")) {
+      const isAnchor = !!e.target?.closest?.(".dpiSelectBtn, [data-color-picker-anchor=\"1\"]");
+      if (wrap.classList.contains("open") && !wrap.contains(e.target) && !isAnchor) {
         close();
       }
     });
@@ -5839,6 +6053,7 @@ function openDrawer(btn) {
   if (bit6) {
     bit6.addEventListener("change", () => {
       if (!hasFeature("hasSecondarySurfaceToggle")) return;
+      syncAdvancedPanelUi();
       enqueueDevicePatch({ surfaceModeSecondary: !!bit6.checked });
     });
   }
@@ -5893,6 +6108,7 @@ function openDrawer(btn) {
      * @returns {any} 返回结果。
      */
     const commitAngle = () => {
+      if (angleInput.disabled) return;
       const v = Number(angleInput.value);
       if (!Number.isFinite(v)) return;
       enqueueDevicePatch({ sensorAngle: v });
@@ -5914,6 +6130,7 @@ function openDrawer(btn) {
      * @returns {any} 返回结果。
      */
     const commitFeel = () => {
+      if (feelInput.disabled) return;
       const v = Number(feelInput.value);
       if (!Number.isFinite(v)) return;
       enqueueDevicePatch({ surfaceFeel: v });
@@ -6141,6 +6358,11 @@ function openDrawer(btn) {
     const feelVal = readMerged("surfaceFeel");
     if (feelVal != null) safeSetValue($("#feelInput"), feelVal);
 
+    const staticLedColor = readMerged("staticLedColor");
+    if (staticLedColor != null) {
+      __applyStaticLedColorPanelValue(ensureStaticLedColorPanel(), staticLedColor);
+    }
+
     const onboardMemoryMode = readMerged("onboardMemoryMode");
     if (onboardMemoryMode != null) {
       setCb("#lgOnboardMemoryToggle", onboardMemoryMode);
@@ -6186,16 +6408,19 @@ function openDrawer(btn) {
     try { applyKeymapFromCfg?.(cfg); } catch (_) {}
 
 
-    if (hasFeature("hasAtkLights")) {
+    if (hasDpiLightCycle) {
       const dpiLight = readMerged("dpiLightEffect");
       if (dpiLight != null) {
         updateAtkCycleUI("atkDpiLightCycle", dpiLight, ATK_DPI_LIGHT_OPTS, false);
       }
+    }
+    if (hasReceiverLightCycle) {
       const rxLight = readMerged("receiverLightEffect");
       if (rxLight != null) {
         updateAtkCycleUI("atkReceiverLightCycle", rxLight, ATK_RX_LIGHT_OPTS, false);
       }
     }
+    syncAdvancedPanelUi();
   }
 
   hidApi.onBattery((bat) => {

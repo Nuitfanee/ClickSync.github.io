@@ -67,15 +67,13 @@
   }
 
   function _isNinjutsoDevice(d) {
-    return (
-      d?.vendorId === 0x093a &&
-      d?.productId === 0xeb02 &&
-      Array.isArray(d?.collections) &&
-      d.collections.some((c) => {
-        const page = Number(c?.usagePage);
-        return page === 0xff01 || page === 0xff00;
-      })
-    );
+    if (d?.vendorId !== 0x093a || d?.productId !== 0xeb02) return false;
+    // Some browsers/firmwares may not expose vendor pages consistently on first read.
+    if (!Array.isArray(d?.collections) || !d.collections.length) return true;
+    return d.collections.some((c) => {
+      const page = Number(c?.usagePage);
+      return page === 0xff01 || page === 0xff00;
+    });
   }
 
   /**
@@ -299,7 +297,8 @@
       list = _filterKnownDevices(uniq);
     }
 
-    if (pinPrimary && primary && list.includes(primary)) {
+    if (pinPrimary && primary) {
+      if (!list.includes(primary)) return [primary, ...list];
       return [primary, ...list.filter((d) => d !== primary)];
     }
     return list;
@@ -315,7 +314,7 @@
    *
    * @returns {Promise<HIDDevice|null>} 选择的设备或 null。
    */
-  async function requestDevice() {
+  async function requestDevice({ preferDifferentFrom = null } = {}) {
     if (!navigator.hid) throw new Error("当前浏览器不支持 WebHID。");
 
     const allFilters = DEVICE_REGISTRY.flatMap((entry) => entry.filters);
@@ -330,9 +329,35 @@
     }
 
     const devices = await navigator.hid.requestDevice({ filters: uniqueFilters });
+    if (!Array.isArray(devices) || !devices.length) return null;
+
+    const avoidType = preferDifferentFrom ? normalizeDeviceId(preferDifferentFrom) : null;
+    if (avoidType && devices.length > 1) {
+      const typed = devices.map((dev) => ({
+        dev,
+        type: identifyDeviceType(dev),
+      }));
+      const hasAvoid = typed.some((x) => x.type === avoidType);
+      if (hasAvoid) {
+        const preferred = typed.find((x) => x.type && x.type !== avoidType);
+        if (preferred?.dev) return preferred.dev;
+      }
+    }
+
     return devices[0] || null;
   }
 
+
+  function _inferTypeByVidPid(device) {
+    const vid = Number(device?.vendorId);
+    const pid = Number(device?.productId);
+    if (vid === 0x24ae) return "rapoo";
+    if (ATK_VENDOR_IDS.has(vid)) return "atk";
+    if (vid === 0x093a && pid === 0xeb02) return "ninjutso";
+    if (vid === 0x1915) return "chaos";
+    if (vid === 0x046d) return "logitech";
+    return null;
+  }
 
   /**
    * 识别设备类型。
@@ -346,7 +371,7 @@
     for (const entry of DEVICE_REGISTRY) {
       if (entry.match(device)) return entry.type;
     }
-    return null;
+    return _inferTypeByVidPid(device);
   }
 
 
@@ -391,7 +416,7 @@
     if (mode && typeof mode === "object" && mode.vendorId) {
       primary = mode;
     } else if (mode === true) {
-      primary = await requestDevice();
+      primary = await requestDevice({ preferDifferentFrom: preferredType || getSelectedDevice() });
     } else if (primaryDevice) {
       primary = primaryDevice;
     } else {
@@ -404,7 +429,12 @@
     }
 
     const detectedType = identifyDeviceType(primary);
-    const preferType = preferredType || detectedType || getSelectedDevice();
+    const isManualPick = mode === true || (mode && typeof mode === "object" && mode.vendorId);
+    const preferType = (
+      isManualPick
+        ? (detectedType || preferredType)
+        : (preferredType || detectedType)
+    ) || getSelectedDevice();
     const candidates = await _collectCandidatesByFilter(primary, preferType, { pinPrimary });
 
     return { device: primary, candidates, detectedType, preferredType: preferType };

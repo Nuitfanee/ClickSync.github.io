@@ -158,8 +158,8 @@
           debounceMs: [2, 5, 10],
         },
         sensor: {
-          angleDeg: { min: -30, max: 30, step: 1, hint: "Range -30 ~ 30" },
-          feel: { min: 0, max: 20, step: 1, unit: "", name: "LED Speed", sub: "Range 0 - 20" },
+          angleDeg: { min: 25, max: 100, step: 25, hint: "Range 25 - 100", name: "灯光亮度", sub: "Range 25 - 100", unit: "%" },
+          feel: { min: 0, max: 20, step: 1, unit: "", name: "灯效速度", sub: "Range 0 - 20" },
         },
         dpi: {
           step: 1,
@@ -171,17 +171,26 @@
         texts: {
           landingTitle: "NINJUTSO",
           landingCaption: "stare into the void to connect (NINJUTSO)",
-          lod: { code: "005 // Burst", title: "Burst Mode", desc: "Toggle burst mode" },
-          led: { code: "006 // Hyper Click", title: "Hyper Click", desc: "Toggle hyper click mode" },
+          lod: { code: "005 // Burst", title: "Burst 模式", desc: "burst 模式微调更准，功耗更高" },
+          led: { code: "006 // Hyper Click", title: "Hyper Click", desc: "可降低按键延迟" },
+          ledMaster: { code: "007 // LED Master", title: "灯光开关 ", desc: "Enable LED related controls" },
           perfMode: {
             hp: { color: "#000000", text: "Standard mode." },
             sport: { color: "#FF4500", text: "Esports mode with lower latency." },
             oc: { color: "#4F46E5", text: "Overclock mode for max response." },
           },
+          lightCycles: {
+            dpi: { code: "008 // MARA Mode", title: "灯效模式", desc: "点击切换常亮与跑马模式" },
+          },
+          staticLedColor: { code: "009 // Static Color", title: "常亮颜色", desc: "点击选择常亮模式颜色" },
+      advancedSectionHeaders: {
+        power: "01 // 休眠和防误触",
+        sensor: "02 // LED灯效参数",
+      },
           lights: {
             dpi: [
               { val: 0, label: "Static", cls: "atk-mode-0" },
-              { val: 1, label: "Marquee", cls: "atk-mode-1" },
+              { val: 1, label: "MARA", cls: "atk-mode-1" },
             ],
             receiver: [
               { val: 25, label: "25%", cls: "atk-mode-0" },
@@ -522,6 +531,13 @@
   const fromNinjutsoLedMode = (raw) => (toNinjutsoLedMode(raw) === "marquee" ? 1 : 0);
   const toNinjutsoLedBrightness = (value) => nearestFromList(value, NINJUTSO_LED_BRIGHTNESS_LEVELS, 100);
   const fromNinjutsoLedBrightness = (raw) => nearestFromList(raw, NINJUTSO_LED_BRIGHTNESS_LEVELS, 100);
+  const normalizeHexColor = (raw, fallback = "#11119A") => {
+    const fb = String(fallback || "#11119A").trim().toUpperCase();
+    let s = String(raw == null ? "" : raw).trim().toUpperCase();
+    if (!s) return fb;
+    if (!s.startsWith("#")) s = `#${s}`;
+    return /^#[0-9A-F]{6}$/.test(s) ? s : fb;
+  };
 
   const BaseRapooProfile = {
     id: "rapoo",
@@ -585,10 +601,15 @@
       hasCommProtocol: true,
       hasLongRange: false,
       hasAtkLights: false,
+      hasDpiLightCycle: false,
+      hasReceiverLightCycle: false,
+      hasStaticLedColorPanel: false,
       hasDpiColors: false,
       hasDpiLods: false,
       hasDpiAdvancedAxis: true,
       hasSensorAngle: true,
+      hideSensorAngleVisualization: false,
+      hideSensorAngleCenterMark: false,
       hasSurfaceFeel: true,
       showHeightViz: true,
       hideSportPerfMode: false,
@@ -599,6 +620,15 @@
       hasLightforceSwitch: false,
       hasSurfaceMode: false,
       hasBhopDelay: false,
+      ledMasterBySecondarySurface: false,
+      ledMasterGatesDpiLightEffect: false,
+      ledMasterGatesReceiverLightEffect: false,
+      ledMasterGatesSurfaceFeel: false,
+      ledMasterGatesStaticLedColor: false,
+      surfaceFeelRequiresDpiLightEffect: false,
+      surfaceFeelRequiredDpiLightValue: 1,
+      staticLedColorRequiresDpiLightEffect: false,
+      staticLedColorRequiredDpiLightValue: 0,
       supportsBatteryRequest: false,
       batteryPollMs: 120000,
       batteryPollTag: "2min",
@@ -653,6 +683,8 @@
       hasCommProtocol: false,
       hasLongRange: true,
       hasAtkLights: true,
+      hasDpiLightCycle: true,
+      hasReceiverLightCycle: true,
       hasDpiColors: true,
       hideSportPerfMode: true,
       supportsBatteryRequest: true,
@@ -672,26 +704,40 @@
       landingCaption: ninjutsoTexts.landingCaption,
       lod: ninjutsoTexts.lod,
       led: ninjutsoTexts.led,
+      secondarySurface: ninjutsoTexts.ledMaster,
       perfMode: ninjutsoTexts.perfMode,
+      lightCycles: ninjutsoTexts.lightCycles,
+      staticLedColor: ninjutsoTexts.staticLedColor,
+      advancedSectionHeaders: ninjutsoTexts.advancedSectionHeaders,
       lights: ninjutsoTexts.lights,
+      advancedOrders: {
+        surfaceModePrimary: 50,
+        primaryLedFeature: 60,
+        secondarySurfaceToggle: 70,
+        dpiLightEffect: 80,
+        staticLedColor: 85,
+        receiverLightEffect: 90,
+      },
     },
     ranges: window.AppConfig?.ranges?.ninjutso,
     keyMap: {
       ...BaseRapooProfile.keyMap,
       surfaceModePrimary: "burstEnabled",
-      surfaceModeSecondary: null,
+      surfaceModeSecondary: "ledEnabled",
       primaryLedFeature: "hyperClick",
       surfaceFeel: "ledSpeed",
       keyScanningRate: null,
       wirelessStrategyMode: null,
       commProtocolMode: null,
-      sensorAngle: null,
+      sensorAngle: "ledBrightness",
       dpiLightEffect: "ledMode",
       receiverLightEffect: "ledBrightness",
+      staticLedColor: "ledColor",
     },
     transforms: {
       ...BaseRapooProfile.transforms,
       surfaceModePrimary: { write: (v) => !!v, read: readBool },
+      surfaceModeSecondary: { write: (v) => !!v, read: readBool },
       primaryLedFeature: { write: (v) => !!v, read: readBool },
       surfaceFeel: {
         write: (v) => clamp(Math.trunc(Number(v) || 0), 0, 20),
@@ -701,6 +747,10 @@
           return clamp(Math.trunc(n), 0, 20);
         },
       },
+      sensorAngle: {
+        write: (v) => toNinjutsoLedBrightness(v),
+        read: (raw) => fromNinjutsoLedBrightness(raw),
+      },
       dpiLightEffect: {
         write: (v) => toNinjutsoLedMode(v),
         read: (raw) => fromNinjutsoLedMode(raw),
@@ -709,11 +759,15 @@
         write: (v) => toNinjutsoLedBrightness(v),
         read: (raw) => fromNinjutsoLedBrightness(raw),
       },
+      staticLedColor: {
+        write: (v) => normalizeHexColor(v, "#11119A"),
+        read: (raw) => normalizeHexColor(raw, "#11119A"),
+      },
     },
     features: {
       ...BaseRapooProfile.features,
       hasPrimarySurfaceToggle: true,
-      hasSecondarySurfaceToggle: false,
+      hasSecondarySurfaceToggle: true,
       hasPrimaryLedFeature: true,
       hasPerformanceMode: true,
       hasMotionSync: false,
@@ -724,12 +778,26 @@
       hasCommProtocol: false,
       hasLongRange: false,
       hasAtkLights: true,
+      hasDpiLightCycle: true,
+      hasReceiverLightCycle: false,
+      hasStaticLedColorPanel: true,
       hasDpiColors: false,
       hasDpiLods: false,
       hasDpiAdvancedAxis: false,
-      hasSensorAngle: false,
+      hasSensorAngle: true,
+      hideSensorAngleVisualization: true,
+      hideSensorAngleCenterMark: true,
       hasSurfaceFeel: true,
       showHeightViz: false,
+      ledMasterBySecondarySurface: true,
+      ledMasterGatesDpiLightEffect: true,
+      ledMasterGatesReceiverLightEffect: true,
+      ledMasterGatesSurfaceFeel: true,
+      ledMasterGatesStaticLedColor: true,
+      surfaceFeelRequiresDpiLightEffect: true,
+      surfaceFeelRequiredDpiLightValue: 1,
+      staticLedColorRequiresDpiLightEffect: true,
+      staticLedColorRequiredDpiLightValue: 0,
       keymapButtonCount: 5,
       supportsBatteryRequest: true,
       batteryPollMs: 60000,
@@ -1696,6 +1764,23 @@
     const advancedLegacyLeft = doc.getElementById("advancedLegacyLeft");
     const advancedLegacyRight = doc.getElementById("advancedLegacyRight");
     const advancedLogitechColumn = doc.getElementById("advancedLogitechColumn");
+    const legacySectionHeaders = advancedLegacyLeft
+      ? Array.from(advancedLegacyLeft.querySelectorAll(".advBlock > .advSectionHeader"))
+      : [];
+    const applySectionHeaderText = (el, text) => {
+      if (!el) return;
+      if (el.dataset.__orig_text == null) el.dataset.__orig_text = String(el.textContent ?? "");
+      if (text != null && String(text).trim() !== "") {
+        el.textContent = String(text);
+        return;
+      }
+      if (el.dataset.__orig_text != null) el.textContent = el.dataset.__orig_text;
+    };
+    const sectionHeaders = (ui?.advancedSectionHeaders && typeof ui.advancedSectionHeaders === "object")
+      ? ui.advancedSectionHeaders
+      : null;
+    applySectionHeaderText(legacySectionHeaders[0], sectionHeaders?.power);
+    applySectionHeaderText(legacySectionHeaders[1], sectionHeaders?.sensor);
 
     const b6 = doc.getElementById("bit6");
     const b6Item = b6?.closest("label.advShutterItem");
@@ -1707,6 +1792,16 @@
     const bit3Item = bit3?.closest("label.advShutterItem");
     const sensorAngleInput = doc.getElementById("angleInput");
     const angleCard = sensorAngleInput?.closest(".slider-card");
+    const angleDisp = doc.getElementById("angle_disp");
+    const angleName = angleCard?.querySelector(".slider-name");
+    const angleSub = angleCard?.querySelector(".slider-sub");
+    const angleVisualGroup = angleCard?.querySelector(".horizon-visual");
+    const angleCenterMark = angleCard?.querySelector(".center-mark");
+    if (angleName && angleName.dataset.__orig_text == null) angleName.dataset.__orig_text = angleName.textContent ?? "";
+    if (angleSub && angleSub.dataset.__orig_text == null) angleSub.dataset.__orig_text = angleSub.textContent ?? "";
+    if (angleDisp && angleDisp.dataset.__orig_unit == null) {
+      angleDisp.dataset.__orig_unit = String(angleDisp.dataset.unit ?? "");
+    }
 
     const rapooPollingCycle = doc.getElementById("rapooPollingCycle");
     const dpiAdvancedMeta = doc.getElementById("dpiAdvancedMeta");
@@ -1764,6 +1859,16 @@
         if (code) code.textContent = ui.led.code || "";
       }
     }
+    if (ui?.secondarySurface) {
+      if (b6Item) {
+        const title = b6Item.querySelector(".label-title");
+        const desc = b6Item.querySelector(".label-desc");
+        const code = b6Item.querySelector(".label-code");
+        if (title) title.textContent = ui.secondarySurface.title || "";
+        if (desc) desc.textContent = ui.secondarySurface.desc || "";
+        if (code) code.textContent = ui.secondarySurface.code || "";
+      }
+    }
 
     const showLogitechAdvancedPanel = !!features.hasLogitechAdvancedPanel;
     if (advancedPanel) {
@@ -1796,6 +1901,15 @@
       }
       angleCard.style.display = features.hasSensorAngle === false ? "none" : (angleCard.dataset.__orig_display || "");
     }
+    const __setNodeDisplayByFeature = (el, hideByFeature) => {
+      if (!el) return;
+      if (el.dataset.__orig_display == null) {
+        el.dataset.__orig_display = String(el.style.display ?? "");
+      }
+      el.style.display = hideByFeature ? "none" : (el.dataset.__orig_display || "");
+    };
+    __setNodeDisplayByFeature(angleVisualGroup, !!features.hideSensorAngleVisualization);
+    __setNodeDisplayByFeature(angleCenterMark, !!features.hideSensorAngleCenterMark);
     if (dpiAdvancedMeta) {
       if (dpiAdvancedMeta.dataset.__orig_display == null) {
         dpiAdvancedMeta.dataset.__orig_display = String(dpiAdvancedMeta.style.display ?? "");
@@ -1822,10 +1936,43 @@
     const atkDpiLight = doc.getElementById("atkDpiLightCycle");
     const atkRxLight = doc.getElementById("atkReceiverLightCycle");
     const atkLongRange = doc.getElementById("atkLongRangeModeItem");
+    const applyCycleMeta = (item, meta) => {
+      if (!item || !meta) return;
+      const title = item.querySelector(".label-title");
+      const desc = item.querySelector(".label-desc");
+      const code = item.querySelector(".label-code");
+      if (title) title.textContent = meta.title || "";
+      if (desc) desc.textContent = meta.desc || "";
+      if (code) code.textContent = meta.code || "";
+    };
+    applyCycleMeta(atkDpiLight, ui?.lightCycles?.dpi);
+    applyCycleMeta(atkRxLight, ui?.lightCycles?.receiver);
 
-    if (atkDpiLight) atkDpiLight.style.display = features.hasAtkLights ? "block" : "none";
-    if (atkRxLight) atkRxLight.style.display = features.hasAtkLights ? "block" : "none";
+    const showDpiLightCycle = Object.prototype.hasOwnProperty.call(features || {}, "hasDpiLightCycle")
+      ? !!features.hasDpiLightCycle
+      : !!features.hasAtkLights;
+    const showReceiverLightCycle = Object.prototype.hasOwnProperty.call(features || {}, "hasReceiverLightCycle")
+      ? !!features.hasReceiverLightCycle
+      : !!features.hasAtkLights;
+    if (atkDpiLight) atkDpiLight.style.display = showDpiLightCycle ? "block" : "none";
+    if (atkRxLight) atkRxLight.style.display = showReceiverLightCycle ? "block" : "none";
     if (atkLongRange) atkLongRange.style.display = features.hasLongRange ? "block" : "none";
+    const advancedOrders = (ui?.advancedOrders && typeof ui.advancedOrders === "object") ? ui.advancedOrders : {};
+    const applyOrder = (el, key) => {
+      if (!el) return;
+      if (el.dataset.__orig_order == null) el.dataset.__orig_order = String(el.style.order ?? "");
+      if (!Object.prototype.hasOwnProperty.call(advancedOrders, key)) {
+        el.style.order = el.dataset.__orig_order || "";
+        return;
+      }
+      const raw = Number(advancedOrders[key]);
+      el.style.order = Number.isFinite(raw) ? String(raw) : String(advancedOrders[key]);
+    };
+    applyOrder(lodItem, "surfaceModePrimary");
+    applyOrder(ledItem, "primaryLedFeature");
+    applyOrder(b6Item, "secondarySurfaceToggle");
+    applyOrder(atkDpiLight, "dpiLightEffect");
+    applyOrder(atkRxLight, "receiverLightEffect");
 
     const keymapButtons = Array.from(doc.querySelectorAll('#keys .kmPoint'));
     const keymapBtnCount = Number(features.keymapButtonCount);
@@ -1894,8 +2041,32 @@
       angleInput.max = String(angleCfg.max);
       if (angleCfg.step != null) angleInput.step = String(angleCfg.step);
       const angleCard = angleInput.closest(".slider-card");
+      const angleName = angleCard?.querySelector(".slider-name");
       const angleSub = angleCard?.querySelector(".slider-sub");
-      if (angleSub && angleCfg.hint) angleSub.textContent = angleCfg.hint;
+      if (angleName) {
+        if (angleCfg.name != null && String(angleCfg.name).trim() !== "") {
+          angleName.textContent = String(angleCfg.name);
+        } else if (angleName.dataset.__orig_text != null) {
+          angleName.textContent = angleName.dataset.__orig_text;
+        }
+      }
+      if (angleSub) {
+        if (angleCfg.sub != null && String(angleCfg.sub).trim() !== "") {
+          angleSub.textContent = String(angleCfg.sub);
+        } else if (angleCfg.hint) {
+          angleSub.textContent = angleCfg.hint;
+        } else if (angleSub.dataset.__orig_text != null) {
+          angleSub.textContent = angleSub.dataset.__orig_text;
+        }
+      }
+      const angleDisp = doc.getElementById("angle_disp");
+      if (angleDisp) {
+        if (angleCfg.unit != null) {
+          angleDisp.dataset.unit = String(angleCfg.unit);
+        } else if (angleDisp.dataset.__orig_unit != null) {
+          angleDisp.dataset.unit = angleDisp.dataset.__orig_unit;
+        }
+      }
     }
 
     installAutoTrackInterval(doc);

@@ -130,13 +130,13 @@
     DEBOUNCE_W: 0x29,
     DEBOUNCE_R: 0x15,
     HYPER_W: 0x16,
-    HYPER_R: 0x11,
+    HYPER_R: 0x17,
     BURST_W: 0x31,
     BURST_R: 0x32,
     SLEEP_W: 0x18,
     SLEEP_R: 0x19,
     DPI_INDEX_W: 0x1b,
-    DPI_INDEX_R: 0x17,
+    DPI_INDEX_R: 0x1c,
     DPI_COUNT_W: 0x1d,
     DPI_COUNT_R: 0x1e,
     FACTORY_RESET_W: 0x33,
@@ -218,11 +218,12 @@
       return out;
     }
 
-    async _withTimeout(promise) {
+    async _withTimeout(promise, timeoutMs = this.sendTimeoutMs) {
+      const ms = clampInt(timeoutMs, 1, 60_000);
       return await Promise.race([
         promise,
-        sleep(this.sendTimeoutMs).then(() => {
-          throw new ProtocolError(`I/O timeout (${this.sendTimeoutMs}ms)`, "IO_TIMEOUT");
+        sleep(ms).then(() => {
+          throw new ProtocolError(`I/O timeout (${ms}ms)`, "IO_TIMEOUT");
         }),
       ]);
     }
@@ -250,10 +251,11 @@
       throw new ProtocolError(`write failed: ${errs.join(" | ")}`, "IO_WRITE_FAIL", { rid });
     }
 
-    async _receiveFeatureReportDirect(reportId) {
+    async _receiveFeatureReportDirect(reportId, timeoutMs = null) {
       this._requireDeviceOpen();
       const rid = Number(reportId);
-      const dv = await this._withTimeout(this.device.receiveFeatureReport(rid));
+      const ms = timeoutMs == null ? this.sendTimeoutMs : Number(timeoutMs);
+      const dv = await this._withTimeout(this.device.receiveFeatureReport(rid), ms);
       if (!dv) return new Uint8Array(0);
       return new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
     }
@@ -262,8 +264,8 @@
       return this.queue.enqueue(() => this._sendReportDirect(Number(reportId), String(hex)));
     }
 
-    async receiveFeatureReport(reportId) {
-      return this.queue.enqueue(() => this._receiveFeatureReportDirect(Number(reportId)));
+    async receiveFeatureReport(reportId, { timeoutMs = null } = {}) {
+      return this.queue.enqueue(() => this._receiveFeatureReportDirect(Number(reportId), timeoutMs));
     }
 
     async sendAndReceiveFeature({ rid, hex, featureRid = HID_CONST.MAIN_RID, waitMs = null }) {
@@ -347,37 +349,46 @@
 
     const candidates = [];
     if (u8.length >= 9) {
-      candidates.push({
-        name: "with_rid_echo",
-        score: u8[0] === HID_CONST.MAIN_RID ? 40 : 10,
-        cmd: u8[1],
-        len: u8[6],
-        dataOffset: 8,
-      });
+      if (u8[0] === HID_CONST.MAIN_RID) {
+        candidates.push({
+          name: "with_rid_echo",
+          cmd: u8[1],
+          len: u8[6],
+          dataOffset: 8,
+        });
+      }
       candidates.push({
         name: "without_rid_echo",
-        score: 30,
         cmd: u8[0],
         len: u8[5],
         dataOffset: 7,
       });
       candidates.push({
         name: "legacy_without_rid",
-        score: 5,
         cmd: u8[0],
         len: u8[6],
         dataOffset: 8,
       });
     }
 
+    const validCandidates = candidates.filter((c) => c.dataOffset <= u8.length);
     let selected = null;
-    for (const c of candidates) {
-      if (c.dataOffset > u8.length) continue;
-      if (expectedCmd != null && toU8(c.cmd) !== toU8(expectedCmd)) continue;
-      if (!selected || c.score > selected.score) selected = c;
-    }
-    if (!selected) {
-      selected = candidates.sort((a, b) => b.score - a.score)[0] || null;
+    if (expectedCmd != null) {
+      const expect = toU8(expectedCmd);
+      selected = validCandidates.find((c) => toU8(c.cmd) === expect) || null;
+      if (!selected) {
+        throw new ProtocolError("response command mismatch", "IO_CMD_MISMATCH", {
+          expectedCmd: expect,
+          observed: validCandidates.map((c) => ({
+            frame: c.name,
+            cmd: toU8(c.cmd),
+            len: toU8(c.len),
+          })),
+          hex: bytesToHex(u8),
+        });
+      }
+    } else {
+      selected = validCandidates[0] || null;
     }
     if (!selected) {
       throw new ProtocolError("cannot parse response frame", "IO_READ_FAIL", { hex: bytesToHex(u8) });
@@ -440,7 +451,11 @@
     timings: Object.freeze({
       interCmdDelayMs: 12,
       secureGateWaitMs: 10,
-      configReadDelayMs: 10,
+      configReadDelayMs: 18,
+      configReadRetries: 3,
+      configReadRetryGapMs: 16,
+      configReadDrainReads: 2,
+      configReadDrainTimeoutMs: 140,
     }),
   });
 
@@ -1035,10 +1050,9 @@
       key: "ledProfile",
       kind: "virtual",
       priority: 80,
-      triggers: ["ledEnabled", "ledBrightness", "ledMode", "ledSpeed", "ledColor"],
+      triggers: ["ledBrightness", "ledMode", "ledSpeed", "ledColor"],
       plan(patch) {
         const touched = (
-          ("ledEnabled" in patch) ||
           ("ledBrightness" in patch) ||
           ("ledMode" in patch) ||
           ("ledSpeed" in patch) ||
@@ -1098,7 +1112,6 @@
       if (dpiTouched) out.dpiProfile = true;
 
       const ledTouched = (
-        ("ledEnabled" in out) ||
         ("ledBrightness" in out) ||
         ("ledMode" in out) ||
         ("ledSpeed" in out) ||
@@ -1631,26 +1644,100 @@
       });
     }
 
+    _isRetriableReadError(err) {
+      const code = String(err?.code || "");
+      if (!code) return false;
+      return code === "IO_TIMEOUT"
+        || code === "IO_READ_FAIL"
+        || code === "IO_CMD_MISMATCH";
+    }
+
+    async _decodeReadWithDrain(featureU8, { expectedCmd, expectedLen }) {
+      try {
+        return decodeReadData(featureU8, { expectedCmd, expectedLen });
+      } catch (e) {
+        if (e?.code !== "IO_CMD_MISMATCH") throw e;
+      }
+
+      const maxDrain = clampInt(this._profile?.timings?.configReadDrainReads ?? 2, 0, 8);
+      const timeoutMs = clampInt(this._profile?.timings?.configReadDrainTimeoutMs ?? 140, 20, 2000);
+      let lastErr = null;
+
+      for (let i = 0; i < maxDrain; i++) {
+        let driftU8;
+        try {
+          driftU8 = await this._driver.receiveFeatureReport(HID_CONST.MAIN_RID, { timeoutMs });
+        } catch (e) {
+          lastErr = e;
+          break;
+        }
+
+        try {
+          return decodeReadData(driftU8, { expectedCmd, expectedLen });
+        } catch (e) {
+          lastErr = e;
+          if (e?.code !== "IO_CMD_MISMATCH") break;
+        }
+      }
+
+      throw (lastErr || new ProtocolError("failed to recover from stale response frame", "IO_READ_FAIL", {
+        expectedCmd: toU8(expectedCmd),
+      }));
+    }
+
+    async _readCmdBytesWithRetry({ cmd, lenOrIdx, dataBytes, expectedLen, useWriteFrame = false }) {
+      const waitMs = this._profile.timings.configReadDelayMs ?? this._profile.timings.interCmdDelayMs ?? 12;
+      const retries = clampInt(this._profile?.timings?.configReadRetries ?? 3, 1, 8);
+      const retryGapMs = clampInt(this._profile?.timings?.configReadRetryGapMs ?? 16, 0, 500);
+      const readCmd = toU8(cmd);
+      let lastErr = null;
+
+      for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+          const hex = useWriteFrame
+            ? ProtocolCodec.write({ cmd: readCmd, lenOrIdx, dataBytes })
+            : ProtocolCodec.read({ cmd: readCmd, lenOrIdx, dataBytes });
+          const featureU8 = await this._driver.sendAndReceiveFeature({
+            rid: HID_CONST.MAIN_RID,
+            hex,
+            featureRid: HID_CONST.MAIN_RID,
+            waitMs,
+          });
+          return await this._decodeReadWithDrain(featureU8, {
+            expectedCmd: readCmd,
+            expectedLen,
+          });
+        } catch (e) {
+          lastErr = e;
+          const isLastAttempt = attempt >= retries - 1;
+          if (!this._isRetriableReadError(e) || isLastAttempt) break;
+          if (retryGapMs > 0) await sleep(retryGapMs * (attempt + 1));
+        }
+      }
+
+      throw (lastErr || new ProtocolError(`read command failed: 0x${readCmd.toString(16).padStart(2, "0")}`, "IO_READ_FAIL", {
+        cmd: readCmd,
+      }));
+    }
+
     async _readCmdBytes(cmd, { lenOrIdx = 0x00, dataBytes = [], expectedLen = null } = {}) {
-      const hex = ProtocolCodec.read({ cmd, lenOrIdx, dataBytes });
-      const featureU8 = await this._driver.sendAndReceiveFeature({
-        rid: HID_CONST.MAIN_RID,
-        hex,
-        featureRid: HID_CONST.MAIN_RID,
-        waitMs: this._profile.timings.configReadDelayMs ?? this._profile.timings.interCmdDelayMs ?? 12,
+      return this._readCmdBytesWithRetry({
+        cmd,
+        lenOrIdx,
+        dataBytes,
+        expectedLen,
+        useWriteFrame: false,
       });
-      return decodeReadData(featureU8, { expectedCmd: cmd, expectedLen });
     }
 
     async _readCmdBytesW(cmd, { lenOrIdx = 0x01, dataBytes = [], expectedLen = null } = {}) {
-      const hex = ProtocolCodec.write({ cmd, lenOrIdx, dataBytes });
-      const featureU8 = await this._driver.sendAndReceiveFeature({
-        rid: HID_CONST.MAIN_RID,
-        hex,
-        featureRid: HID_CONST.MAIN_RID,
-        waitMs: this._profile.timings.configReadDelayMs ?? this._profile.timings.interCmdDelayMs ?? 12,
+      return this._readCmdBytesWithRetry({
+        cmd,
+        lenOrIdx,
+        dataBytes,
+        expectedLen,
+        useWriteFrame: true,
       });
-      return decodeReadData(featureU8, { expectedCmd: cmd, expectedLen });
     }
 
     async _readCmdU8(cmd, { lenOrIdx = 0x00, dataBytes = [] } = {}) {
@@ -1814,14 +1901,19 @@
       }
 
       try {
-        snapshot.hyperClick = DECODERS.bool(await this._readCmdU8(CMD.HYPER_R, { lenOrIdx: 0x00 }));
+        const hyperBytes = await this._readCmdBytesW(CMD.HYPER_R, {
+          lenOrIdx: 0x00,
+          dataBytes: [],
+          expectedLen: 1,
+        });
+        snapshot.hyperClick = DECODERS.bool(hyperBytes[0] ?? 0);
       } catch (e) {
         console.warn("[Ninjutso] read hyperClick failed", e);
       }
 
       try {
         const burstBytes = await this._readCmdBytesW(CMD.BURST_R, { lenOrIdx: 0x00, dataBytes: [], expectedLen: 1 });
-        snapshot.burstEnabled = (toU8(burstBytes[0] ?? 0) === 0x00);
+        snapshot.burstEnabled = (toU8(burstBytes[0] ?? 0) === 0x01);
       } catch (e) {
         console.warn("[Ninjutso] read burst failed", e);
       }
@@ -1842,7 +1934,11 @@
         console.warn("[Ninjutso] read slot count failed", e);
       }
       try {
-        const idxBytes = await this._readCmdBytesW(CMD.DPI_INDEX_R, { lenOrIdx: 0x00, dataBytes: [], expectedLen: 1 });
+        const idxBytes = await this._readCmdBytesW(CMD.DPI_INDEX_R, {
+          lenOrIdx: 0x00,
+          dataBytes: [],
+          expectedLen: 1,
+        });
         currentDpiIndex = clampInt(idxBytes[0] ?? 0, 0, currentSlotCount - 1);
       } catch (e) {
         console.warn("[Ninjutso] read dpi index failed", e);
