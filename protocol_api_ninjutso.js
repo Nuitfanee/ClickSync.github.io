@@ -1399,9 +1399,7 @@
     add("中键", "mouse", 0x01, 0x0002);
     add("后退", "mouse", 0x01, 0x0003);
     add("前进", "mouse", 0x01, 0x0004);
-    add("无", "mouse", 0x00, 0x0000);
-    add("禁止按键", "mouse", 0x00, 0x0000);
-    add("DPI循环", "mouse", 0x08, 0x0003);
+
 
     for (let i = 0; i < 26; i++) {
       add(String.fromCharCode(65 + i), "keyboard", 0x02, (0x00 << 8) | (0x04 + i));
@@ -1414,8 +1412,41 @@
     add("ESC", "keyboard", 0x02, (0x00 << 8) | 0x29);
     add("Tab", "keyboard", 0x02, (0x00 << 8) | 0x2b);
     add("空格", "keyboard", 0x02, (0x00 << 8) | 0x2c);
-    add("Ctrl+C", "keyboard", 0x02, (0x01 << 8) | 0x06);
-    add("Ctrl+V", "keyboard", 0x02, (0x01 << 8) | 0x19);
+
+    add("剪切", "keyboard", 0x02, (0x01 << 8) | 0x1b);
+    add("撤销", "keyboard", 0x02, (0x01 << 8) | 0x1d);
+    add("重做", "keyboard", 0x02, (0x01 << 8) | 0x1c);
+    add("全选", "keyboard", 0x02, (0x01 << 8) | 0x04);
+    add("保存", "keyboard", 0x02, (0x01 << 8) | 0x16);
+    add("打开", "keyboard", 0x02, (0x01 << 8) | 0x12);
+    add("新建", "keyboard", 0x02, (0x01 << 8) | 0x11);
+    add("切换窗口", "system", 0x02, (0x04 << 8) | 0x2b);
+
+    add("Backspace", "keyboard", 0x02, (0x00 << 8) | 0x2a);
+    add("Delete", "keyboard", 0x02, (0x00 << 8) | 0x4c);
+    add("Insert", "keyboard", 0x02, (0x00 << 8) | 0x49);
+    add("Home", "keyboard", 0x02, (0x00 << 8) | 0x4a);
+    add("End", "keyboard", 0x02, (0x00 << 8) | 0x4d);
+    add("Page Up", "keyboard", 0x02, (0x00 << 8) | 0x4b);
+    add("Page Down", "keyboard", 0x02, (0x00 << 8) | 0x4e);
+    add("Up Arrow", "keyboard", 0x02, (0x00 << 8) | 0x52);
+    add("Down Arrow", "keyboard", 0x02, (0x00 << 8) | 0x51);
+    add("Left Arrow", "keyboard", 0x02, (0x00 << 8) | 0x50);
+    add("Right Arrow", "keyboard", 0x02, (0x00 << 8) | 0x4f);
+
+
+    for (let i = 1; i <= 12; i++) {
+      add(`F${i}`, "keyboard", 0x02, (0x00 << 8) | (0x39 + i));
+    }
+
+
+    add("显示桌面", "system", 0x02, (0x08 << 8) | 0x07);
+    add("锁定电脑", "system", 0x02, (0x08 << 8) | 0x0f);
+    add("打开资源管理器", "system", 0x02, (0x08 << 8) | 0x08);
+    add("运行", "system", 0x02, (0x08 << 8) | 0x15);
+    add("搜索", "system", 0x02, (0x08 << 8) | 0x16);
+    add("任务管理器", "system", 0x02, (0x03 << 8) | 0x29);
+    add("截图", "system", 0x02, (0x0a << 8) | 0x16);
 
     return Object.freeze(actions);
   })();

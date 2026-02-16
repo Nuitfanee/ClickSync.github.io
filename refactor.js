@@ -700,6 +700,16 @@
     ui: {
       ...BaseRapooProfile.ui,
       skinClass: "atk",
+      keymap: {
+        imageSrc: "./image/ninjutso.png",
+        points: {
+          1: { x: 30, y: 20, side: "left" },
+          2: { x: 70, y: 38, side: "right" },
+          3: { x: 50.5, y: 26, side: "right" },
+          4: { x: 14, y: 40, side: "left" },
+          5: { x: 14, y: 51, side: "left" },
+        },
+      },
       landingTitle: ninjutsoTexts.landingTitle,
       landingCaption: ninjutsoTexts.landingCaption,
       lod: ninjutsoTexts.lod,
