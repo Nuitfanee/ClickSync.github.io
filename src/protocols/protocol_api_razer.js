@@ -95,8 +95,6 @@
   const RAZER_POST_OPEN_SETTLE_MS = 60;
 
   const PID = Object.freeze({
-    DEATHADDER_V3_PRO_WIRED_1K: 0x00b6,
-    DEATHADDER_V3_PRO_WIRELESS_1K: 0x00b7,
     VIPER_V3_PRO_WIRED: 0x00c0,
     VIPER_V3_PRO_WIRELESS: 0x00c1,
     DEATHADDER_V3_PRO_WIRED_ALT: 0x00c2,
@@ -106,8 +104,6 @@
   });
 
   const PID_NAME = Object.freeze({
-    [PID.DEATHADDER_V3_PRO_WIRED_1K]: "Razer DeathAdder V3 Pro (Wired 1K)",
-    [PID.DEATHADDER_V3_PRO_WIRELESS_1K]: "Razer DeathAdder V3 Pro (Wireless 1K)",
     [PID.VIPER_V3_PRO_WIRED]: "Razer Viper V3 Pro (Wired)",
     [PID.VIPER_V3_PRO_WIRELESS]: "Razer Viper V3 Pro (Wireless)",
     [PID.DEATHADDER_V3_PRO_WIRED_ALT]: "Razer DeathAdder V3 Pro (Wired Alt)",
@@ -116,26 +112,9 @@
     [PID.DEATHADDER_V3_HYPERSPEED_WIRELESS]: "Razer DeathAdder V3 HyperSpeed (Wireless)",
   });
 
-  const PID_DEATHADDER_V3_FAMILY = Object.freeze([
-    PID.DEATHADDER_V3_PRO_WIRED_1K,
-    PID.DEATHADDER_V3_PRO_WIRELESS_1K,
-    PID.DEATHADDER_V3_PRO_WIRED_ALT,
-    PID.DEATHADDER_V3_PRO_WIRELESS_ALT,
-    PID.DEATHADDER_V3_HYPERSPEED_WIRED,
-    PID.DEATHADDER_V3_HYPERSPEED_WIRELESS,
-  ]);
-
-  // DeathAdder V3 family follows the Viper V3 Pro advanced capability model.
-  const PID_VIPER_V3_PRO_ADVANCED_MODEL = new Set([
-    PID.VIPER_V3_PRO_WIRELESS,
-    ...PID_DEATHADDER_V3_FAMILY,
-  ]);
-
   // OpenRazer driver (driver/razermouse_driver.c) uses report index 0x00 for this PID family.
   // Keep it hardcoded to avoid interface/report-id probing guesses.
   const PID_FEATURE_REPORT_ID = Object.freeze({
-    [PID.DEATHADDER_V3_PRO_WIRED_1K]: 0x00,
-    [PID.DEATHADDER_V3_PRO_WIRELESS_1K]: 0x00,
     [PID.VIPER_V3_PRO_WIRED]: 0x00,
     [PID.VIPER_V3_PRO_WIRELESS]: 0x00,
     [PID.DEATHADDER_V3_PRO_WIRED_ALT]: 0x00,
@@ -168,21 +147,24 @@
     TX_DEFAULT: 0x1f,
   });
 
-  const PID_POLLING_V2 = new Set(PID_VIPER_V3_PRO_ADVANCED_MODEL);
+  const PID_POLLING_V2 = new Set([PID.VIPER_V3_PRO_WIRELESS]);
 
   const PID_BATTERY = new Set([
     PID.VIPER_V3_PRO_WIRED,
     PID.VIPER_V3_PRO_WIRELESS,
-    ...PID_DEATHADDER_V3_FAMILY,
+    PID.DEATHADDER_V3_PRO_WIRED_ALT,
+    PID.DEATHADDER_V3_PRO_WIRELESS_ALT,
+    PID.DEATHADDER_V3_HYPERSPEED_WIRED,
+    PID.DEATHADDER_V3_HYPERSPEED_WIRELESS,
   ]);
 
-  const PID_HYPER_INDICATOR = new Set(PID_VIPER_V3_PRO_ADVANCED_MODEL);
+  const PID_HYPER_INDICATOR = new Set([PID.VIPER_V3_PRO_WIRELESS]);
 
   const PID_LOW_THRESHOLD_TX_FF = new Set([]);
 
   function getWaitMsForPid(pid) {
     // Mirrors razer_get_report() wait groups in razermouse_driver.c.
-    if (PID_VIPER_V3_PRO_ADVANCED_MODEL.has(pid)) return 60;
+    if (pid === PID.VIPER_V3_PRO_WIRELESS) return 60;
     return 31;
   }
 
@@ -208,7 +190,7 @@
   function txForField(pid, field) {
     if (field === "chargeLowThreshold" && PID_LOW_THRESHOLD_TX_FF.has(pid)) return 0xff;
     if (field === "lowPowerThresholdPercent" && PID_LOW_THRESHOLD_TX_FF.has(pid)) return 0xff;
-    if (field === "hyperpollingIndicatorMode" && PID_VIPER_V3_PRO_ADVANCED_MODEL.has(pid)) return 0xff;
+    if (field === "hyperpollingIndicatorMode" && pid === PID.VIPER_V3_PRO_WIRELESS) return 0xff;
     if (field === "dynamicSensitivity") return RAZER_CONST.TX_DEFAULT;
     if (field === "smartTracking") return RAZER_CONST.TX_DEFAULT;
     if (field === "sensorAngle") return RAZER_CONST.TX_DEFAULT;
