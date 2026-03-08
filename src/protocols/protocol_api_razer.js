@@ -95,6 +95,8 @@
   const RAZER_POST_OPEN_SETTLE_MS = 60;
 
   const PID = Object.freeze({
+    DEATHADDER_V3_PRO_WIRED_1K: 0x00b6,
+    DEATHADDER_V3_PRO_WIRELESS_1K: 0x00b7,
     VIPER_V3_PRO_WIRED: 0x00c0,
     VIPER_V3_PRO_WIRELESS: 0x00c1,
     DEATHADDER_V3_PRO_WIRED_ALT: 0x00c2,
@@ -104,6 +106,8 @@
   });
 
   const PID_NAME = Object.freeze({
+    [PID.DEATHADDER_V3_PRO_WIRED_1K]: "Razer DeathAdder V3 Pro (Wired 1K)",
+    [PID.DEATHADDER_V3_PRO_WIRELESS_1K]: "Razer DeathAdder V3 Pro (Wireless 1K)",
     [PID.VIPER_V3_PRO_WIRED]: "Razer Viper V3 Pro (Wired)",
     [PID.VIPER_V3_PRO_WIRELESS]: "Razer Viper V3 Pro (Wireless)",
     [PID.DEATHADDER_V3_PRO_WIRED_ALT]: "Razer DeathAdder V3 Pro (Wired Alt)",
@@ -115,6 +119,8 @@
   // OpenRazer driver (driver/razermouse_driver.c) uses report index 0x00 for this PID family.
   // Keep it hardcoded to avoid interface/report-id probing guesses.
   const PID_FEATURE_REPORT_ID = Object.freeze({
+    [PID.DEATHADDER_V3_PRO_WIRED_1K]: 0x00,
+    [PID.DEATHADDER_V3_PRO_WIRELESS_1K]: 0x00,
     [PID.VIPER_V3_PRO_WIRED]: 0x00,
     [PID.VIPER_V3_PRO_WIRELESS]: 0x00,
     [PID.DEATHADDER_V3_PRO_WIRED_ALT]: 0x00,
@@ -150,6 +156,8 @@
   const PID_POLLING_V2 = new Set([PID.VIPER_V3_PRO_WIRELESS]);
 
   const PID_BATTERY = new Set([
+    PID.DEATHADDER_V3_PRO_WIRED_1K,
+    PID.DEATHADDER_V3_PRO_WIRELESS_1K,
     PID.VIPER_V3_PRO_WIRED,
     PID.VIPER_V3_PRO_WIRELESS,
     PID.DEATHADDER_V3_PRO_WIRED_ALT,
