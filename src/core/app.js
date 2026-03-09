@@ -8679,6 +8679,50 @@ function openDrawer(btn) {
       // true: disable old-cache fallback during connect (treat first-read failure as failure);
       // false: allow degraded entry via old-cache fallback.
       const strictConnectNoCacheFallback = (window.AppConfig?.features?.strictConnectNoCacheFallback !== false);
+      const RAZER_DIAG_VENDOR_ID = 0x1532;
+      const RAZER_DIAG_PIDS = new Set([0x00b7, 0x00c3]);
+
+      const isRazerDiagTarget = (targetDev) => (
+        Number(targetDev?.vendorId) === RAZER_DIAG_VENDOR_ID
+        && RAZER_DIAG_PIDS.has(Number(targetDev?.productId))
+      );
+
+      const summarizeHidReportInfoList = (list) => {
+        if (!Array.isArray(list)) return [];
+        return list.map((entry) => ({
+          reportId: Number(entry?.reportId ?? 0),
+          itemCount: Array.isArray(entry?.items) ? entry.items.length : 0,
+        }));
+      };
+
+      const summarizeHidCollections = (targetDev) => {
+        const collections = Array.isArray(targetDev?.collections) ? targetDev.collections : [];
+        return collections.map((collection, index) => ({
+          index,
+          usagePage: Number(collection?.usagePage ?? 0),
+          usage: Number(collection?.usage ?? 0),
+          inputReports: summarizeHidReportInfoList(collection?.inputReports),
+          outputReports: summarizeHidReportInfoList(collection?.outputReports),
+          featureReports: summarizeHidReportInfoList(collection?.featureReports),
+          children: Array.isArray(collection?.children) ? collection.children.length : 0,
+        }));
+      };
+
+      const logRazerHandshakeDiag = (tag, targetDev, extra = {}) => {
+        if (!isRazerDiagTarget(targetDev)) return;
+        try {
+          console.warn(`[RazerDiag][${tag}]`, {
+            vendorId: Number(targetDev?.vendorId ?? 0),
+            productId: Number(targetDev?.productId ?? 0),
+            productName: String(targetDev?.productName || ""),
+            opened: !!targetDev?.opened,
+            selectedDeviceId: String(window.DeviceRuntime?.getSelectedDevice?.() || DEVICE_ID || ""),
+            protocolCapabilities: (hidApi?.capabilities && typeof hidApi.capabilities === "object") ? { ...hidApi.capabilities } : null,
+            collections: summarizeHidCollections(targetDev),
+            ...extra,
+          });
+        } catch (_) {}
+      };
 
       const withHandshakeTimeout = async (task, timeoutMs, hooks = {}) => {
         const { onTimeout = null } = hooks || {};
@@ -8735,6 +8779,10 @@ function openDrawer(btn) {
 
         hidApi.device = targetDev;
         applyCapabilityStateToRuntime(hidApi.capabilities);
+        logRazerHandshakeDiag("HandshakeStart", targetDev, {
+          handshakeSeq,
+          phase: "before-bootstrapSession",
+        });
 
         let displayName = ProtocolApi.resolveMouseDisplayName(targetDev.vendorId, targetDev.productId, targetDev.productName || "HID Device");
         console.log("HID Open, Handshaking:", displayName);
@@ -8827,6 +8875,12 @@ function openDrawer(btn) {
             break;
           } catch (err) {
             lastErr = err;
+            logRazerHandshakeDiag("HandshakeFailed", cand, {
+              attempt: i + 1,
+              errorName: String(err?.name || ""),
+              errorCode: String(err?.code || ""),
+              errorMessage: String(err?.message || err),
+            });
             console.warn(`Handshake failed (cand=${cand?.vendorId?.toString?.(16)}:${cand?.productId?.toString?.(16)} attempt=${i+1}):`, err);
           }
         }
