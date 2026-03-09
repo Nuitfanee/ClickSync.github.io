@@ -126,6 +126,7 @@
         perfMode: rapooTexts.perfMode,
         lights: rapooTexts.lights,
         advancedPanelDensity: "default",
+        advancedPanels: {},
         advancedSingleOrders: {},
         advancedSourceRegionByStdKey: { ...ADVANCED_SOURCE_REGION_DEFAULTS },
       },
@@ -845,6 +846,27 @@
         columnsOffsetX: -60,
       },
       advancedPanelDensity: "compact",
+      advancedPanels: {
+        dynamicSensitivityComposite: {
+          requiresCapabilities: ["dynamicSensitivity"],
+        },
+        sensorAngle: {
+          requiresFeatures: ["hasSensorAngle"],
+          requiresCapabilities: ["sensorAngle"],
+        },
+        smartTrackingComposite: {
+          requiresCapabilities: ["smartTracking"],
+        },
+        lowPowerThresholdPercent: {
+          requiresCapabilities: ["lowPowerThresholdPercent"],
+        },
+        hyperpollingIndicator: {
+          requiresCapabilities: ["hyperpollingIndicatorMode"],
+        },
+        sleepSeconds: {
+          enabled: true,
+        },
+      },
       advancedSingleOrders: {
         hyperpollingIndicator: 10,
         dynamicSensitivityComposite: 20,

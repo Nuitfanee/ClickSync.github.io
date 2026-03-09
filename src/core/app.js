@@ -5065,6 +5065,19 @@ function getCapabilities() {
   return __capabilities || {};
 }
 
+function applyCapabilityStateToRuntime(cap, opts = {}) {
+  try { applyCapabilitiesToUi(cap, opts); } catch (_) {}
+  try {
+    const runtimeDeviceId = window.DeviceRuntime?.getSelectedDevice?.() || DEVICE_ID;
+    const runtimeAdapter = window.DeviceAdapters.getAdapter(runtimeDeviceId);
+    window.DeviceUI?.applyAdvancedRuntime?.({
+      adapter: runtimeAdapter,
+      root: document,
+      capabilities: getCapabilities(),
+    });
+  } catch (_) {}
+}
+
 function resolveRuntimeDpiAdapter() {
   const runtimeDeviceId = window.DeviceRuntime?.getSelectedDevice?.() || DEVICE_ID;
   return window.DeviceAdapters.getAdapter(runtimeDeviceId);
@@ -5246,9 +5259,7 @@ function applyCapabilitiesToUi(cap, opts = {}) {
   const resolvedMaxDpi = Number.isFinite(incomingMax)
     ? (preserveDpiMax ? Math.max(incomingMax, rememberedMax) : incomingMax)
     : rememberedMax;
-
-
-  const next = {
+  const normalizedBase = {
     dpiSlotCount: Number.isFinite(Number(incoming.dpiSlotCount)) ? Math.trunc(Number(incoming.dpiSlotCount)) : (prevCap.dpiSlotCount ?? 6),
     maxDpi: resolvedMaxDpi,
     dpiStep,
@@ -5266,6 +5277,10 @@ function applyCapabilitiesToUi(cap, opts = {}) {
       ? incoming.pollingRates.map(Number).filter(Number.isFinite)
       : (prevCap.pollingRates ?? null),
   };
+
+  const next = sameDevice
+    ? { ...prevCap, ...incoming, ...normalizedBase }
+    : { ...incoming, ...normalizedBase };
 
   __capabilities = next;
   __capabilitiesDeviceId = runtimeDeviceId;
@@ -8207,16 +8222,7 @@ function openDrawer(btn) {
   // - Never bypass this function with ad-hoc DOM writes from polling/read paths.
   function applyConfigToUi(cfg) {
 
-    try { applyCapabilitiesToUi(cfg?.capabilities, { preserveDpiMax: true }); } catch (_) {}
-    try {
-      const runtimeDeviceId = window.DeviceRuntime?.getSelectedDevice?.() || DEVICE_ID;
-      const runtimeAdapter = window.DeviceAdapters.getAdapter(runtimeDeviceId);
-      window.DeviceUI?.applyAdvancedRuntime?.({
-        adapter: runtimeAdapter,
-        root: document,
-        capabilities: cfg?.capabilities || null,
-      });
-    } catch (_) {}
+    applyCapabilityStateToRuntime(cfg?.capabilities, { preserveDpiMax: true });
     __cleanupExpiredIntents();
     const hasActiveDpiSwitchIntent = !!__getWriteIntent("activeDpiSlotIndex");
     const readMerged = (key) => readStandardValueWithIntent(cfg, key);
@@ -8728,7 +8734,7 @@ function openDrawer(btn) {
         } catch (_) {}
 
         hidApi.device = targetDev;
-        try { applyCapabilitiesToUi(hidApi.capabilities); } catch {}
+        applyCapabilityStateToRuntime(hidApi.capabilities);
 
         let displayName = ProtocolApi.resolveMouseDisplayName(targetDev.vendorId, targetDev.productId, targetDev.productName || "HID Device");
         console.log("HID Open, Handshaking:", displayName);

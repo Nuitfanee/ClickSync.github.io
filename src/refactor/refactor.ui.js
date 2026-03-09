@@ -30,6 +30,10 @@
 // ============================================================
 (function () {
   const { buildSelectOptions } = window.AppConfig?.utils || {};
+  const {
+    resolveAdvancedPanelRegistry,
+    evaluateAdvancedPanelVisibility,
+  } = window.__DeviceRefactorCore || {};
   const tr = (zh, en) => (typeof window !== "undefined" && typeof window.tr === "function")
     ? window.tr(zh, en)
     : zh;
@@ -80,12 +84,14 @@
     selectEl.innerHTML = buildSelectOptions(values, labelFn);
   }
 
-  function setCachedNodeDisplay(el, visible) {
+  function setCachedNodeDisplay(el, visible, visibleDisplay = null) {
     if (!el) return;
     if (el.dataset.__orig_display == null) {
       el.dataset.__orig_display = String(el.style.display ?? "");
     }
-    el.style.display = visible ? (el.dataset.__orig_display || "") : "none";
+    el.style.display = visible
+      ? (visibleDisplay == null ? (el.dataset.__orig_display || "") : String(visibleDisplay))
+      : "none";
     el.setAttribute("aria-hidden", visible ? "false" : "true");
   }
 
@@ -431,33 +437,78 @@
   const ADVANCED_LAYOUT_DUAL = "dual";
   const ADVANCED_PANEL_DENSITY_DEFAULT = "default";
   const ADVANCED_PANEL_DENSITY_COMPACT = "compact";
-  // Single-column semantic whitelist entry:
-  // keys must align with profile.features.advancedSingleItems.
-  // When adding a new single-column item, update all of the following:
-  // 1) index.html data-adv-item
-  // 2) refactor.profiles.js advancedSingleItems
-  // 3) Matching semantic query and interaction logic in app.js
-  // 4) Reuse existing semantic items first (for example sleepSeconds);
-  //    do not create duplicate card semantics for the same feature
-  const ADVANCED_SINGLE_ITEM_SELECTORS = Object.freeze({
-    onboardMemory: '[data-adv-region="single"] [data-adv-item="onboardMemory"]',
-    lightforceSwitch: '[data-adv-region="single"] [data-adv-item="lightforceSwitch"]',
-    surfaceMode: '[data-adv-region="single"] [data-adv-item="surfaceMode"]',
-    bhopToggle: '[data-adv-region="single"] [data-adv-item="bhopToggle"]',
-    bhopDelay: '[data-adv-region="single"] [data-adv-item="bhopDelay"]',
-    dynamicSensitivityComposite: '[data-adv-region="single"] [data-adv-item="dynamicSensitivityComposite"]',
-    smartTrackingComposite: '[data-adv-region="single"] [data-adv-item="smartTrackingComposite"]',
-    sensorAngle: '[data-adv-region="single"] [data-adv-item="sensorAngle"]',
-    lowPowerThresholdPercent: '[data-adv-region="single"] [data-adv-item="lowPowerThresholdPercent"]',
-    sleepSeconds: '[data-adv-region="single"] [data-adv-item="sleepSeconds"]',
-    hyperpollingIndicator: '[data-adv-region="single"] [data-adv-item="hyperpollingIndicator"]',
-  });
-  const ADVANCED_SINGLE_ITEM_CAPABILITY_GATES = Object.freeze({
-    hyperpollingIndicator: "hyperpollingIndicatorMode",
-    dynamicSensitivityComposite: "dynamicSensitivity",
-    smartTrackingComposite: "smartTracking",
-    sensorAngle: "sensorAngle",
-    lowPowerThresholdPercent: "lowPowerThresholdPercent",
+  const ADVANCED_PANEL_HOSTS = Object.freeze({
+    sleepSeconds: Object.freeze([
+      Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="sleepSeconds"][data-adv-control="range"]' }),
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] .slider-card[data-adv-item="sleepSeconds"][data-adv-control="range"]' }),
+    ]),
+    debounceMs: Object.freeze([
+      Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="debounceMs"][data-adv-control="range"]' }),
+    ]),
+    sensorAngle: Object.freeze([
+      Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="sensorAngle"][data-adv-control="range"]' }),
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] .slider-card[data-adv-item="sensorAngle"][data-adv-control="range"]' }),
+    ]),
+    surfaceFeel: Object.freeze([
+      Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="surfaceFeel"][data-adv-control="range"]' }),
+    ]),
+    motionSync: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="motionSync"][data-adv-control="toggle"]' }),
+    ]),
+    linearCorrection: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="linearCorrection"][data-adv-control="toggle"]' }),
+    ]),
+    rippleControl: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="rippleControl"][data-adv-control="toggle"]' }),
+    ]),
+    secondarySurfaceToggle: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="secondarySurfaceToggle"][data-adv-control="toggle"]' }),
+    ]),
+    keyScanningRate: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="keyScanningRate"][data-adv-control="cycle"]', visibleDisplay: "block" }),
+    ]),
+    surfaceModePrimary: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="surfaceModePrimary"][data-adv-control="toggle"]' }),
+    ]),
+    primaryLedFeature: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="primaryLedFeature"][data-adv-control="toggle"]' }),
+    ]),
+    dpiLightEffect: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="dpiLightEffect"][data-adv-control="cycle"]', visibleDisplay: "block" }),
+    ]),
+    receiverLightEffect: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="receiverLightEffect"][data-adv-control="cycle"]', visibleDisplay: "block" }),
+    ]),
+    longRangeMode: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="longRangeMode"][data-adv-control="toggle"]', visibleDisplay: "block" }),
+    ]),
+    onboardMemory: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="onboardMemory"][data-adv-control="toggle"]' }),
+    ]),
+    lightforceSwitch: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="lightforceSwitch"][data-adv-control="toggle"]' }),
+    ]),
+    surfaceMode: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="surfaceMode"][data-adv-control="cycle"]' }),
+    ]),
+    bhopToggle: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="bhopToggle"][data-adv-control="toggle"]' }),
+    ]),
+    bhopDelay: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] .slider-card[data-adv-item="bhopDelay"][data-adv-control="range"]' }),
+    ]),
+    dynamicSensitivityComposite: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="dynamicSensitivityComposite"][data-adv-control="cycle"]' }),
+    ]),
+    smartTrackingComposite: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="smartTrackingComposite"][data-adv-control="panel"]' }),
+    ]),
+    lowPowerThresholdPercent: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] .slider-card[data-adv-item="lowPowerThresholdPercent"][data-adv-control="range"]' }),
+    ]),
+    hyperpollingIndicator: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="hyperpollingIndicator"][data-adv-control="cycle"]' }),
+    ]),
   });
 
   function getAdvancedPanel(doc) {
@@ -563,19 +614,51 @@
     setCachedNodeDisplay(advancedSingleColumn, isSingle);
   }
 
-  function applyAdvancedSingleItemVisibility({ doc, features, capabilities }) {
+  function queryAdvancedPanelHost(doc, hostMeta) {
+    if (!doc || !hostMeta?.selector) return null;
+    return doc.querySelector(hostMeta.selector);
+  }
+
+  function isAdvancedPanelRegionVisible(layout, region) {
+    return layout === ADVANCED_LAYOUT_SINGLE ? region === "single" : region !== "single";
+  }
+
+  function resolveAdvancedPanelEnabledFallback(features, itemKey, region) {
+    if (region !== "single") return true;
     const allowList = Array.isArray(features?.advancedSingleItems)
       ? features.advancedSingleItems.map((item) => String(item || "").trim()).filter(Boolean)
       : [];
-    const allowSet = new Set(allowList);
+    return allowList.includes(itemKey);
+  }
+
+  function applyAdvancedPanelAvailability({ doc, adapter, layout, capabilities }) {
+    const features = adapter?.features || {};
+    const registry = typeof resolveAdvancedPanelRegistry === "function"
+      ? resolveAdvancedPanelRegistry(adapter)
+      : {};
     const capabilityBag = (capabilities && typeof capabilities === "object") ? capabilities : {};
 
-    Object.entries(ADVANCED_SINGLE_ITEM_SELECTORS).forEach(([itemKey, selector]) => {
-      const el = doc.querySelector(selector);
-      if (!el) return;
-      const gateKey = ADVANCED_SINGLE_ITEM_CAPABILITY_GATES[itemKey];
-      const gatePass = gateKey ? !!capabilityBag[gateKey] : true;
-      setCachedNodeDisplay(el, allowSet.has(itemKey) && gatePass);
+    Object.entries(ADVANCED_PANEL_HOSTS).forEach(([itemKey, hostEntries]) => {
+      const rule = registry?.[itemKey] || null;
+      const nextHosts = Array.isArray(hostEntries) ? hostEntries : [];
+      nextHosts.forEach((hostMeta) => {
+        const node = queryAdvancedPanelHost(doc, hostMeta);
+        if (!node) return;
+        const region = String(hostMeta?.region || "").trim().toLowerCase();
+        const regionPass = !Array.isArray(rule?.regions) || !rule.regions.length
+          ? true
+          : rule.regions.includes(region);
+        const enabledFallback = resolveAdvancedPanelEnabledFallback(features, itemKey, region);
+        const capabilityPass = typeof evaluateAdvancedPanelVisibility === "function"
+          ? evaluateAdvancedPanelVisibility(rule, {
+            features,
+            capabilities: capabilityBag,
+            enabledFallback,
+          })
+          : enabledFallback;
+        const visible = regionPass && isAdvancedPanelRegionVisible(layout, region) && capabilityPass;
+        setCachedNodeDisplay(node, visible, hostMeta?.visibleDisplay ?? null);
+      });
     });
   }
 
@@ -600,10 +683,11 @@
     return cur;
   }
 
-  // Advanced single orders are profile-driven and applied to direct layout hosts.
-  // This keeps ordering stable even when a semantic item is nested in a wrapper
-  // (e.g. cycle item inside shutter-list).
-  function applyAdvancedSingleItemOrders({ doc, ui }) {
+  function applyAdvancedSingleItemOrders({ doc, adapter }) {
+    const ui = adapter?.ui || {};
+    const registry = typeof resolveAdvancedPanelRegistry === "function"
+      ? resolveAdvancedPanelRegistry(adapter)
+      : {};
     const advancedSingleOrders = (ui?.advancedSingleOrders && typeof ui.advancedSingleOrders === "object")
       ? ui.advancedSingleOrders
       : {};
@@ -611,14 +695,20 @@
     if (!singleRegion) return;
 
     const hostOrderCandidates = new Map();
-    Object.entries(ADVANCED_SINGLE_ITEM_SELECTORS).forEach(([itemKey, selector]) => {
-      const node = doc.querySelector(selector);
+    Object.entries(ADVANCED_PANEL_HOSTS).forEach(([itemKey, hostEntries]) => {
+      const singleHost = (Array.isArray(hostEntries) ? hostEntries : []).find((hostMeta) => hostMeta?.region === "single");
+      if (!singleHost) return;
+      const node = queryAdvancedPanelHost(doc, singleHost);
       if (!node) return;
       const host = resolveAdvancedSingleOrderHost(singleRegion, node);
       if (!host) return;
       if (!hostOrderCandidates.has(host)) hostOrderCandidates.set(host, []);
-      if (!Object.prototype.hasOwnProperty.call(advancedSingleOrders, itemKey)) return;
-      hostOrderCandidates.get(host).push(advancedSingleOrders[itemKey]);
+      const ruleOrder = Object.prototype.hasOwnProperty.call(registry?.[itemKey] || {}, "order")
+        ? registry[itemKey].order
+        : undefined;
+      const rawOrder = ruleOrder !== undefined ? ruleOrder : advancedSingleOrders[itemKey];
+      if (rawOrder === undefined) return;
+      hostOrderCandidates.get(host).push(rawOrder);
     });
 
     hostOrderCandidates.forEach((orders, host) => {
@@ -650,8 +740,8 @@
     const layout = resolveAdvancedLayout(features);
     applyAdvancedLayout({ doc, layout });
     applyAdvancedPanelDensity({ doc, ui });
-    applyAdvancedSingleItemVisibility({ doc, features, capabilities });
-    applyAdvancedSingleItemOrders({ doc, ui });
+    applyAdvancedPanelAvailability({ doc, adapter, layout, capabilities });
+    applyAdvancedSingleItemOrders({ doc, adapter });
   }
 
   // ============================================================
@@ -1177,20 +1267,6 @@
     }
 
     applyAdvancedRuntime({ adapter, root: doc, capabilities });
-
-    if (lodItem) lodItem.style.display = features.hasPrimarySurfaceToggle ? "" : "none";
-    if (ledItem) ledItem.style.display = features.hasPrimaryLedFeature ? "" : "none";
-    if (bit1Item) bit1Item.style.display = features.hasMotionSync ? "" : "none";
-    if (bit2Item) bit2Item.style.display = features.hasLinearCorrection ? "" : "none";
-    if (bit3Item) bit3Item.style.display = features.hasRippleControl ? "" : "none";
-    if (b6Item) b6Item.style.display = features.hasSecondarySurfaceToggle ? "" : "none";
-    if (keyScanningRateCycle) keyScanningRateCycle.style.display = features.hasKeyScanRate ? "block" : "none";
-    if (angleCard) {
-      if (angleCard.dataset.__orig_display == null) {
-        angleCard.dataset.__orig_display = String(angleCard.style.display ?? "");
-      }
-      angleCard.style.display = features.hasSensorAngle === false ? "none" : (angleCard.dataset.__orig_display || "");
-    }
     __setNodeDisplayByFeature(angleVisualGroup, !!features.hideSensorAngleVisualization);
     __setNodeDisplayByFeature(angleCenterMark, !!features.hideSensorAngleCenterMark);
     if (dpiAdvancedMeta) {
@@ -1223,12 +1299,6 @@
     applyCycleMeta(dpiLightCycle, ui?.lightCycles?.dpi);
     applyCycleMeta(receiverLightCycle, ui?.lightCycles?.receiver);
     applyAdvancedCycleStateMeta({ doc, ui });
-
-    const showDpiLightCycle = !!features.hasDpiLightCycle;
-    const showReceiverLightCycle = !!features.hasReceiverLightCycle;
-    if (dpiLightCycle) dpiLightCycle.style.display = showDpiLightCycle ? "block" : "none";
-    if (receiverLightCycle) receiverLightCycle.style.display = showReceiverLightCycle ? "block" : "none";
-    if (longRangeItem) longRangeItem.style.display = features.hasLongRange ? "block" : "none";
     const advancedOrders = (ui?.advancedOrders && typeof ui.advancedOrders === "object") ? ui.advancedOrders : {};
     applyOrder(lodItem, "surfaceModePrimary", advancedOrders);
     applyOrder(ledItem, "primaryLedFeature", advancedOrders);
