@@ -214,7 +214,6 @@
         showHeightViz: true,
         hideSportPerfMode: false,
         advancedLayout: "dual",
-        advancedSingleItems: [],
         hasOnboardMemoryMode: false,
         warnOnDisableOnboardMemoryMode: false,
         autoEnableOnboardMemoryOnConnect: false,
@@ -303,7 +302,7 @@
   //     // Optional action overrides.
   //   },
   //   features: {
-  //     // Feature toggles and advancedLayout/advancedSingleItems.
+  //     // Feature toggles and advancedLayout.
   //   },
   // });
 
@@ -443,7 +442,6 @@
       showHeightViz: false,
       hideSportPerfMode: false,
       advancedLayout: "dual",
-      advancedSingleItems: [],
       hasOnboardMemoryMode: false,
       warnOnDisableOnboardMemoryMode: false,
       autoEnableOnboardMemoryOnConnect: false,
@@ -484,6 +482,26 @@
     ui: {
       landingReadyText: "LOGITECH READY",
       pollingThemeByWirelessHz: LOGITECH_POLLING_THEME_BY_HZ,
+      advancedPanels: {
+        sleepSeconds: {
+          enabled: false,
+        },
+        sensorAngle: {
+          enabled: false,
+        },
+        dynamicSensitivityComposite: {
+          enabled: false,
+        },
+        smartTrackingComposite: {
+          enabled: false,
+        },
+        lowPowerThresholdPercent: {
+          enabled: false,
+        },
+        hyperpollingIndicator: {
+          enabled: false,
+        },
+      },
       basicModeTypography: {
         columnsOffsetX: -120,
       },
@@ -629,13 +647,6 @@
     },
     features: {
       advancedLayout: "single",
-      advancedSingleItems: [
-        "onboardMemory",
-        "lightforceSwitch",
-        "surfaceMode",
-        "bhopToggle",
-        "bhopDelay",
-      ],
       hasPerformanceMode: false,
       hasConfigSlots: true,
       hasDualPollingRates: true,
@@ -1109,14 +1120,6 @@
     dpiSnapper: defaultDpiSnapper,
     features: {
       advancedLayout: "single",
-      advancedSingleItems: [
-        "dynamicSensitivityComposite",
-        "sensorAngle",
-        "smartTrackingComposite",
-        "lowPowerThresholdPercent",
-        "sleepSeconds",
-        "hyperpollingIndicator",
-      ],
       hasPrimarySurfaceToggle: false,
       hasSecondarySurfaceToggle: false,
       hasPrimaryLedFeature: false,

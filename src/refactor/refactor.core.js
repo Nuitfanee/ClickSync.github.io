@@ -958,10 +958,7 @@ const LOGITECH_DPI_STEP_SEGMENTS = Object.freeze([
     const nextRule = isPlainObject(rule) ? rule : {};
     const features = isPlainObject(ctx?.features) ? ctx.features : {};
     const capabilities = isPlainObject(ctx?.capabilities) ? ctx.capabilities : {};
-    const enabledFallback = Object.prototype.hasOwnProperty.call(ctx || {}, "enabledFallback")
-      ? !!ctx.enabledFallback
-      : true;
-    const enabledPass = nextRule.enabled === false ? false : (nextRule.enabled === true ? true : enabledFallback);
+    const enabledPass = nextRule.enabled !== false;
     const featurePass = !Array.isArray(nextRule.requiresFeatures) || !nextRule.requiresFeatures.length
       ? true
       : nextRule.requiresFeatures.every((key) => !!features[key]);

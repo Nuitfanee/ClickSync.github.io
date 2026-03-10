@@ -9,7 +9,7 @@
  * Semantic DOM contract for advanced controls:
  * - data-adv-region: dual-left | dual-right | single
  * - data-adv-item: semantic item id (brand-neutral)
- * - data-adv-control: toggle | cycle | range | select
+ * - data-adv-control: toggle | cycle | range | select | panel
  * - data-std-key: standard key used by DeviceReader/Writer
  *
  * Single-source region binding contract:
@@ -346,7 +346,18 @@
 
   function applyKeymapVariant({ doc, ui, deviceName }) {
     const keymapScene = resolveKeymapVariant({ ui, deviceName });
+    const canvas = doc.getElementById("kmCanvas");
     const img = doc.querySelector("#keys .kmImg");
+    const setKeymapReady = (ready) => {
+      if (canvas) canvas.dataset.keymapReady = ready ? "1" : "0";
+    };
+    const isImgReadyFor = (imageEl, src) => (
+      !!imageEl
+      && !!src
+      && String(imageEl.getAttribute("src") || "") === src
+      && !!imageEl.complete
+      && Number(imageEl.naturalWidth || 0) > 0
+    );
     let changed = false;
     if (img) {
       if (img.dataset.__orig_src == null) {
@@ -355,16 +366,29 @@
       if (!img.dataset.__variant_load_hooked) {
         img.dataset.__variant_load_hooked = "1";
         img.addEventListener("load", () => {
+          setKeymapReady(true);
           try { window.dispatchEvent(new Event("resize")); } catch (_) {}
+        }, { passive: true });
+        img.addEventListener("error", () => {
+          setKeymapReady(true);
         }, { passive: true });
       }
       const originalSrc = img.dataset.__orig_src || "";
       const nextSrc = String(keymapScene?.imageSrc || "").trim() || originalSrc;
       const curSrc = String(img.getAttribute("src") || "");
-      if (nextSrc && curSrc !== nextSrc) {
-        img.setAttribute("src", nextSrc);
-        changed = true;
+      if (!nextSrc) {
+        setKeymapReady(true);
+      } else if (isImgReadyFor(img, nextSrc)) {
+        setKeymapReady(true);
+      } else {
+        setKeymapReady(false);
+        if (curSrc !== nextSrc) {
+          img.setAttribute("src", nextSrc);
+          changed = true;
+        }
       }
+    } else {
+      setKeymapReady(true);
     }
 
     const pointMap = (keymapScene?.points && typeof keymapScene.points === "object")
@@ -623,14 +647,6 @@
     return layout === ADVANCED_LAYOUT_SINGLE ? region === "single" : region !== "single";
   }
 
-  function resolveAdvancedPanelEnabledFallback(features, itemKey, region) {
-    if (region !== "single") return true;
-    const allowList = Array.isArray(features?.advancedSingleItems)
-      ? features.advancedSingleItems.map((item) => String(item || "").trim()).filter(Boolean)
-      : [];
-    return allowList.includes(itemKey);
-  }
-
   function applyAdvancedPanelAvailability({ doc, adapter, layout, capabilities }) {
     const features = adapter?.features || {};
     const registry = typeof resolveAdvancedPanelRegistry === "function"
@@ -648,14 +664,12 @@
         const regionPass = !Array.isArray(rule?.regions) || !rule.regions.length
           ? true
           : rule.regions.includes(region);
-        const enabledFallback = resolveAdvancedPanelEnabledFallback(features, itemKey, region);
         const capabilityPass = typeof evaluateAdvancedPanelVisibility === "function"
           ? evaluateAdvancedPanelVisibility(rule, {
             features,
             capabilities: capabilityBag,
-            enabledFallback,
           })
-          : enabledFallback;
+          : true;
         const visible = regionPass && isAdvancedPanelRegionVisible(layout, region) && capabilityPass;
         setCachedNodeDisplay(node, visible, hostMeta?.visibleDisplay ?? null);
       });
@@ -1039,7 +1053,7 @@
    * 3) Add rendering rules here; avoid protocol logic.
    * 4) Keep write/read behavior in app.js + profiles/core.
    */
-  function applyVariant({ deviceId, adapter, root, deviceName = "", keymapOnly = false, capabilities = null }) {
+  function applyVariant({ deviceId, adapter, root, deviceName = "", keymapOnly = false }) {
     const doc = root || document;
     const cfg = adapter?.ranges || window.AppConfig?.ranges?.chaos;
     const ui = adapter?.ui || {};
@@ -1266,7 +1280,6 @@
       }
     }
 
-    applyAdvancedRuntime({ adapter, root: doc, capabilities });
     __setNodeDisplayByFeature(angleVisualGroup, !!features.hideSensorAngleVisualization);
     __setNodeDisplayByFeature(angleCenterMark, !!features.hideSensorAngleCenterMark);
     if (dpiAdvancedMeta) {

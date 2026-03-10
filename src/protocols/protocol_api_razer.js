@@ -197,11 +197,6 @@
     Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, row.featureReportId]))
   );
 
-  const FEATURE_PATH_DEBUG_PIDS = new Set([
-    PID.DEATHADDER_V3_PRO_WIRELESS,
-    PID.DEATHADDER_V3_PRO_WIRELESS_ALT,
-  ]);
-
   const SUPPORTED_PIDS = Object.freeze(PID_CAPABILITY_MATRIX.map((row) => row.pid));
   const SUPPORTED_PID_SET = new Set(SUPPORTED_PIDS);
 
@@ -257,37 +252,6 @@
       });
     }
     return pid;
-  }
-
-  function shouldDebugFeaturePath(pid) {
-    return FEATURE_PATH_DEBUG_PIDS.has(Number(pid));
-  }
-
-  function summarizeHidReportInfoList(list) {
-    if (!Array.isArray(list)) return [];
-    return list.map((entry) => ({
-      reportId: Number(entry?.reportId ?? 0),
-      itemCount: Array.isArray(entry?.items) ? entry.items.length : 0,
-    }));
-  }
-
-  function summarizeHidCollections(device) {
-    const collections = Array.isArray(device?.collections) ? device.collections : [];
-    return collections.map((collection, index) => ({
-      index,
-      usagePage: Number(collection?.usagePage ?? 0),
-      usage: Number(collection?.usage ?? 0),
-      inputReports: summarizeHidReportInfoList(collection?.inputReports),
-      outputReports: summarizeHidReportInfoList(collection?.outputReports),
-      featureReports: summarizeHidReportInfoList(collection?.featureReports),
-      children: Array.isArray(collection?.children) ? collection.children.length : 0,
-    }));
-  }
-
-  function logFeaturePathDebug(tag, detail = {}) {
-    try {
-      console.warn(`[RazerDiag][${tag}]`, detail);
-    } catch (_) {}
   }
 
   class SendQueue {
@@ -452,24 +416,6 @@
 
             if (isPermissionPathErr) {
               const permissionRetryBudget = Math.min(busyRetry, RAZER_NOT_ALLOWED_SAME_ID_RETRY);
-              const finalPermissionAttempt = attempt >= permissionRetryBudget;
-              if (finalPermissionAttempt && shouldDebugFeaturePath(this.productId)) {
-                logFeaturePathDebug("FeatureReportPathError", {
-                  pid: `0x${clampU16(this.productId).toString(16).padStart(4, "0")}`,
-                  productName: String(this.device?.productName || ""),
-                  reportId,
-                  featureReportIds: Array.isArray(this._featureReportIds) ? this._featureReportIds.slice(0) : [],
-                  attempt: attempt + 1,
-                  retryBudget: permissionRetryBudget + 1,
-                  commandClass: `0x${clampU8(request?.commandClass).toString(16).padStart(2, "0")}`,
-                  commandId: `0x${clampU8(request?.commandId).toString(16).padStart(2, "0")}`,
-                  requestSize: Number(requestBytes?.length ?? 0),
-                  errorName: name,
-                  errorCode: code,
-                  errorMessage: String(err?.message || err),
-                  collections: summarizeHidCollections(this.device),
-                });
-              }
               if (attempt < permissionRetryBudget) {
                 if (RAZER_RETRY_BACKOFF_MS > 0) await sleep(RAZER_RETRY_BACKOFF_MS);
                 continue;
@@ -2137,6 +2083,7 @@
 
       if (device) this.device = device;
       this._cfg = this._makeDefaultCfg();
+      this._syncCapabilitiesSnapshot();
     }
 
     set device(dev) {
@@ -2148,6 +2095,7 @@
       this._planner.setProductId(pid);
       this._driver.setDevice(this._device, pid);
       this._cfg = this._makeDefaultCfg();
+      this._syncCapabilitiesSnapshot();
     }
 
     get device() {
@@ -2193,16 +2141,24 @@
       };
     }
 
+    _syncCapabilitiesSnapshot(caps = this._caps()) {
+      this.capabilities = this._capabilitiesSnapshot(caps);
+      return this.capabilities;
+    }
+
     _snapshotForUi() {
       const cfg = deepClone(this._cfg || {});
       if (!isObject(cfg.capabilities)) {
-        cfg.capabilities = this._capabilitiesSnapshot(this._caps());
+        cfg.capabilities = isObject(this.capabilities)
+          ? deepClone(this.capabilities)
+          : this._syncCapabilitiesSnapshot();
       }
       return cfg;
     }
 
     _emitConfig() {
       if (this._closed) return;
+      this._syncCapabilitiesSnapshot();
       const cfg = this._snapshotForUi();
       for (const cb of Array.from(this._onConfigCbs)) {
         try {
