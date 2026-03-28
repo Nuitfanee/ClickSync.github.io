@@ -8885,6 +8885,10 @@ function openDrawer(btn) {
         return [
           `collections=${Number(item.collectionCount ?? 0)}`,
           `usagePage=${formatSummaryHex(item.usagePage)}`,
+          `expectedUsagePage=${formatSummaryHex(item.controlUsagePage)}`,
+          `featureReportId=${formatSummaryHex(item.webhidFeatureReportId)}`,
+          `firstFeature=${Number(item.firstCollectionFeatureReportCount ?? 0)}`,
+          `firstInput=${Number(item.firstCollectionInputReportCount ?? 0)}`,
           `usage=${formatSummaryHex(item.usage)}`,
           `feature=${item.hasFeatureReports ? "yes" : "no"}(${Number(item.featureReportCount ?? 0)})`,
           `input=${item.hasInputReports ? "yes" : "no"}(${Number(item.inputReportCount ?? 0)})`,
@@ -8912,13 +8916,28 @@ function openDrawer(btn) {
         return err;
       };
 
+      const requiresDeterministicPlan = detectedType === "razer";
       const handshakePlans = connectionPlans.length
         ? normalizeConnectionPlans(connectionPlans)
-        : (!connectionPlanError ? candidates.map(buildDefaultConnectionPlan).filter(Boolean) : []);
+        : (
+          (!requiresDeterministicPlan && !connectionPlanError)
+            ? candidates.map(buildDefaultConnectionPlan).filter(Boolean)
+            : []
+        );
 
-      if (!handshakePlans.length && connectionPlanError) {
-        console.warn("[HID] Connection plan resolution failed:", connectionPlanError);
-        throw toConnectionPlanError(connectionPlanError);
+      if (!handshakePlans.length) {
+        const effectivePlanError = connectionPlanError || (
+          requiresDeterministicPlan
+            ? {
+              code: "MISSING_RAZER_CONNECTION_PLAN",
+              message: "Missing deterministic Razer connection plan",
+            }
+            : null
+        );
+        if (effectivePlanError) {
+          console.warn("[HID] Connection plan resolution failed:", effectivePlanError);
+          throw toConnectionPlanError(effectivePlanError);
+        }
       }
 
       hidConnecting = true;
@@ -8931,8 +8950,22 @@ function openDrawer(btn) {
         const i = Math.trunc(n);
         return Math.max(min, Math.min(max, i));
       };
-      const handshakeTimeoutMs = resolvePositiveInt(window.AppConfig?.timings?.handshakeTimeoutMs, 5000, 100, 60_000);
-      const bootstrapReadTimeoutMs = resolvePositiveInt(window.AppConfig?.timings?.bootstrapReadTimeoutMs, 1200, 100, 60_000);
+      const selectedDeviceIdForHandshake = String(window.DeviceRuntime?.getSelectedDevice?.() || "").trim().toLowerCase();
+      const isRazerHandshake = selectedDeviceIdForHandshake === "razer";
+      const defaultHandshakeTimeoutMs = isRazerHandshake ? 12_000 : 5_000;
+      const defaultBootstrapReadTimeoutMs = isRazerHandshake ? 2_000 : 1_200;
+      const handshakeTimeoutMs = resolvePositiveInt(
+        window.AppConfig?.timings?.handshakeTimeoutMs,
+        defaultHandshakeTimeoutMs,
+        100,
+        60_000
+      );
+      const bootstrapReadTimeoutMs = resolvePositiveInt(
+        window.AppConfig?.timings?.bootstrapReadTimeoutMs,
+        defaultBootstrapReadTimeoutMs,
+        100,
+        60_000
+      );
       const bootstrapReadRetry = resolvePositiveInt(window.AppConfig?.timings?.bootstrapReadRetry, 2, 1, 10);
       // true: disable old-cache fallback during connect (treat first-read failure as failure);
       // false: allow degraded entry via old-cache fallback.
@@ -9012,11 +9045,17 @@ function openDrawer(btn) {
           }
 
           hidApi.device = controlDevice;
+          if (eventDevice && eventDevice !== controlDevice) {
+            try { hidApi.eventDevice = eventDevice; } catch (_) {}
+          }
           applyCapabilityStateToRuntime(hidApi.capabilities);
-          let displayName = ProtocolApi.resolveMouseDisplayName(
-            controlDevice.vendorId,
-            controlDevice.productId,
-            controlDevice.productName || "HID Device"
+          let displayName = String(
+            hidApi.getCachedConfig?.()?.deviceName
+            || ProtocolApi.resolveMouseDisplayName(
+              controlDevice.vendorId,
+              controlDevice.productId,
+              controlDevice.productName || "HID Device"
+            )
           );
           console.log(`[HID] Handshake plan: ${resolvedPlan?.debugLabel || planDescription}`);
           console.log("HID Open, Handshaking:", displayName);
@@ -9032,6 +9071,7 @@ function openDrawer(btn) {
               device: controlDevice,
               eventDevice,
               reason: "connect",
+              initialReadMode: "full",
               readTimeoutMs: bootstrapReadTimeoutMs,
               readRetry: bootstrapReadRetry,
               // Whether connect flow allows protocol layer to use old-cache fallback.

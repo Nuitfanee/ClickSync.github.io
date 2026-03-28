@@ -86,13 +86,15 @@
   const RAZER_REPORT_LEN = 0x5a; // 90 bytes, from RAZER_REPORT_LEN/RAZER_USB_REPORT_LEN.
   const RAZER_MAX_DPI_STAGES = 5;
   // Unified retry policy: all commands get the same BUSY retry budget.
-  const RAZER_BUSY_RETRY = 32;
+  const RAZER_BUSY_RETRY = 10;
   // Small backoff reduces transient misalignment loops on some hosts/dongles.
   const RAZER_RETRY_BACKOFF_MS = 16;
   // When only one report-id is available, allow short retry for transient NotAllowedError.
-  const RAZER_NOT_ALLOWED_SAME_ID_RETRY = 2;
+  const RAZER_NOT_ALLOWED_SAME_ID_RETRY = 0;
   // Some wireless paths need a short settle window right after open().
   const RAZER_POST_OPEN_SETTLE_MS = 60;
+  // Official Synapse WebHID mouse control path uses Consumer usage page.
+  const RAZER_WEBHID_CONTROL_USAGE_PAGE = 0x0c;
 
   const PID = Object.freeze({
     HYPERPOLLING_WIRELESS_DONGLE: 0x00b3,
@@ -104,13 +106,23 @@
     DEATHADDER_V3_PRO_WIRELESS_ALT: 0x00c3,
     DEATHADDER_V3_HYPERSPEED_WIRED: 0x00c4,
     DEATHADDER_V3_HYPERSPEED_WIRELESS: 0x00c5,
+    VIPER_V4_PRO_WIRED: 0x00e5,
     VIPER_V4_PRO_WIRELESS: 0x00e6,
+  });
+
+  const TRANSPORT_ROLE = Object.freeze({
+    SINGLE: "single",
+    BODY: "body",
+    DONGLE: "dongle",
+    STANDALONE_DONGLE: "standalone_dongle",
   });
 
   const REPORT_STATUS = Object.freeze({
     NEW_COMMAND: 0x00,
     BUSY: 0x01,
+    SUCCESS: 0x02,
     SUCCESSFUL: 0x02,
+    FAIL: 0x03,
     FAILURE: 0x03,
     TIMEOUT: 0x04,
     NOT_SUPPORTED: 0x05,
@@ -129,10 +141,18 @@
   });
 
   function buildPidMatrixRow(pid, name, overrides = null) {
+    const normalizedPid = clampU16(pid);
     return Object.freeze(Object.assign({
-      pid,
+      pid: normalizedPid,
       name,
+      modelKey: `razer_${normalizedPid.toString(16).padStart(4, "0")}`,
+      transportRole: TRANSPORT_ROLE.SINGLE,
+      bodyPid: normalizedPid,
+      donglePid: normalizedPid,
+      webhidFeatureReportId: 0x00,
       featureReportId: 0x00,
+      eventReportId: 0x00,
+      controlUsagePage: RAZER_WEBHID_CONTROL_USAGE_PAGE,
       pollingMode: "legacy",
       battery: true,
       hyperpollingIndicatorMode: false,
@@ -148,47 +168,108 @@
   /*
    * Razer PID capability matrix (single source of truth)
    *
-   * pid     rpt  polling  battery  hyperIM  dynamic  tracking  angle  name
-   * 0x00b3  00   v2       Y        Y        -        Y         -      HyperPolling Wireless Dongle
-   * 0x00b6  00   legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired)
-   * 0x00b7  00   legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless)
-   * 0x00c0  00   legacy   Y        -        Y        Y         Y      Viper V3 Pro (Wired)
-   * 0x00c1  00   v2       Y        Y        Y        Y         Y      Viper V3 Pro (Wireless)
-   * 0x00c2  00   legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired Alt)
-   * 0x00c3  00   legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless Alt)
-   * 0x00c4  00   legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wired)
-   * 0x00c5  00   legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wireless)
-   * 0x00e6  00   v2       Y        Y        Y        Y         Y      Viper V4 Pro (Wireless)
+   * pid     role      feat evt polling  battery  hyperIM  dynamic  tracking  angle  name
+   * 0x00b3  sdongle   00   00  v2       Y        Y        -        Y         -      HyperPolling Wireless Dongle
+   * 0x00b6  body      00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired)
+   * 0x00b7  dongle    00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless)
+   * 0x00c0  body      04   05  legacy   Y        -        Y        Y         Y      Viper V3 Pro (Wired)
+   * 0x00c1  dongle    04   05  v2       Y        Y        Y        Y         Y      Viper V3 Pro (Wireless)
+   * 0x00c2  body      00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired Alt)
+   * 0x00c3  dongle    00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless Alt)
+   * 0x00c4  body      00   00  legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wired)
+   * 0x00c5  dongle    00   00  legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wireless)
+   * 0x00e5  body      04   05  legacy   Y        -        Y        Y         Y      Viper V4 Pro (Wired)
+   * 0x00e6  dongle    04   05  v2       Y        -        Y        Y         Y      Viper V4 Pro (Wireless)
    */
   const PID_CAPABILITY_MATRIX = Object.freeze([
     buildPidMatrixRow(PID.HYPERPOLLING_WIRELESS_DONGLE, "Razer HyperPolling Wireless Dongle", {
+      modelKey: "hyperpolling_wireless_dongle",
+      transportRole: TRANSPORT_ROLE.STANDALONE_DONGLE,
+      bodyPid: null,
+      donglePid: PID.HYPERPOLLING_WIRELESS_DONGLE,
       pollingMode: "v2",
       hyperpollingIndicatorMode: true,
       hyperIndicatorTx: 0xff,
     }),
-    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRED, "Razer DeathAdder V3 Pro (Wired)"),
-    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRELESS, "Razer DeathAdder V3 Pro (Wireless)"),
+    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRED, "Razer DeathAdder V3 Pro (Wired)", {
+      modelKey: "deathadder_v3_pro",
+      transportRole: TRANSPORT_ROLE.BODY,
+      bodyPid: PID.DEATHADDER_V3_PRO_WIRED,
+      donglePid: PID.DEATHADDER_V3_PRO_WIRELESS,
+    }),
+    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRELESS, "Razer DeathAdder V3 Pro (Wireless)", {
+      modelKey: "deathadder_v3_pro",
+      transportRole: TRANSPORT_ROLE.DONGLE,
+      bodyPid: PID.DEATHADDER_V3_PRO_WIRED,
+      donglePid: PID.DEATHADDER_V3_PRO_WIRELESS,
+    }),
     buildPidMatrixRow(PID.VIPER_V3_PRO_WIRED, "Razer Viper V3 Pro (Wired)", {
+      modelKey: "viper_v3_pro",
+      transportRole: TRANSPORT_ROLE.BODY,
+      bodyPid: PID.VIPER_V3_PRO_WIRED,
+      donglePid: PID.VIPER_V3_PRO_WIRELESS,
+      featureReportId: 0x04,
+      eventReportId: 0x05,
       dynamicSensitivity: true,
       sensorAngle: true,
     }),
     buildPidMatrixRow(PID.VIPER_V3_PRO_WIRELESS, "Razer Viper V3 Pro (Wireless)", {
+      modelKey: "viper_v3_pro",
+      transportRole: TRANSPORT_ROLE.DONGLE,
+      bodyPid: PID.VIPER_V3_PRO_WIRED,
+      donglePid: PID.VIPER_V3_PRO_WIRELESS,
+      featureReportId: 0x04,
+      eventReportId: 0x05,
       pollingMode: "v2",
       hyperpollingIndicatorMode: true,
       dynamicSensitivity: true,
       sensorAngle: true,
       hyperIndicatorTx: 0xff,
     }),
-    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRED_ALT, "Razer DeathAdder V3 Pro (Wired Alt)"),
-    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRELESS_ALT, "Razer DeathAdder V3 Pro (Wireless Alt)"),
-    buildPidMatrixRow(PID.DEATHADDER_V3_HYPERSPEED_WIRED, "Razer DeathAdder V3 HyperSpeed (Wired)"),
-    buildPidMatrixRow(PID.DEATHADDER_V3_HYPERSPEED_WIRELESS, "Razer DeathAdder V3 HyperSpeed (Wireless)"),
-    buildPidMatrixRow(PID.VIPER_V4_PRO_WIRELESS, "Razer Viper V4 Pro (Wireless)", {
-      pollingMode: "v2",
-      hyperpollingIndicatorMode: true,
+    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRED_ALT, "Razer DeathAdder V3 Pro (Wired Alt)", {
+      modelKey: "deathadder_v3_pro_alt",
+      transportRole: TRANSPORT_ROLE.BODY,
+      bodyPid: PID.DEATHADDER_V3_PRO_WIRED_ALT,
+      donglePid: PID.DEATHADDER_V3_PRO_WIRELESS_ALT,
+    }),
+    buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRELESS_ALT, "Razer DeathAdder V3 Pro (Wireless Alt)", {
+      modelKey: "deathadder_v3_pro_alt",
+      transportRole: TRANSPORT_ROLE.DONGLE,
+      bodyPid: PID.DEATHADDER_V3_PRO_WIRED_ALT,
+      donglePid: PID.DEATHADDER_V3_PRO_WIRELESS_ALT,
+    }),
+    buildPidMatrixRow(PID.DEATHADDER_V3_HYPERSPEED_WIRED, "Razer DeathAdder V3 HyperSpeed (Wired)", {
+      modelKey: "deathadder_v3_hyperspeed",
+      transportRole: TRANSPORT_ROLE.BODY,
+      bodyPid: PID.DEATHADDER_V3_HYPERSPEED_WIRED,
+      donglePid: PID.DEATHADDER_V3_HYPERSPEED_WIRELESS,
+    }),
+    buildPidMatrixRow(PID.DEATHADDER_V3_HYPERSPEED_WIRELESS, "Razer DeathAdder V3 HyperSpeed (Wireless)", {
+      modelKey: "deathadder_v3_hyperspeed",
+      transportRole: TRANSPORT_ROLE.DONGLE,
+      bodyPid: PID.DEATHADDER_V3_HYPERSPEED_WIRED,
+      donglePid: PID.DEATHADDER_V3_HYPERSPEED_WIRELESS,
+    }),
+    buildPidMatrixRow(PID.VIPER_V4_PRO_WIRED, "Razer Viper V4 Pro (Wired)", {
+      modelKey: "viper_v4_pro",
+      transportRole: TRANSPORT_ROLE.BODY,
+      bodyPid: PID.VIPER_V4_PRO_WIRED,
+      donglePid: PID.VIPER_V4_PRO_WIRELESS,
+      featureReportId: 0x04,
+      eventReportId: 0x05,
       dynamicSensitivity: true,
       sensorAngle: true,
-      hyperIndicatorTx: 0xff,
+    }),
+    buildPidMatrixRow(PID.VIPER_V4_PRO_WIRELESS, "Razer Viper V4 Pro (Wireless)", {
+      modelKey: "viper_v4_pro",
+      transportRole: TRANSPORT_ROLE.DONGLE,
+      bodyPid: PID.VIPER_V4_PRO_WIRED,
+      donglePid: PID.VIPER_V4_PRO_WIRELESS,
+      featureReportId: 0x04,
+      eventReportId: 0x05,
+      pollingMode: "v2",
+      dynamicSensitivity: true,
+      sensorAngle: true,
     }),
   ]);
 
@@ -200,10 +281,31 @@
     Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, row.name]))
   );
 
-  // OpenRazer driver (driver/razermouse_driver.c) uses report index 0x00 for this PID family.
-  // Keep it hardcoded to avoid interface/report-id probing guesses.
+  const PID_TRANSPORT_META = Object.freeze(
+    Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, Object.freeze({
+      pid: row.pid,
+      name: row.name,
+      modelKey: row.modelKey,
+      transportRole: row.transportRole,
+      bodyPid: row.bodyPid,
+      donglePid: row.donglePid,
+      webhidFeatureReportId: row.webhidFeatureReportId,
+      featureReportId: row.featureReportId,
+      eventReportId: row.eventReportId,
+      controlUsagePage: row.controlUsagePage,
+    })]))
+  );
+
   const PID_FEATURE_REPORT_ID = Object.freeze(
     Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, row.featureReportId]))
+  );
+
+  const PID_WEBHID_FEATURE_REPORT_ID = Object.freeze(
+    Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, row.webhidFeatureReportId]))
+  );
+
+  const PID_EVENT_REPORT_ID = Object.freeze(
+    Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, row.eventReportId]))
   );
 
   const SUPPORTED_PIDS = Object.freeze(PID_CAPABILITY_MATRIX.map((row) => row.pid));
@@ -248,8 +350,22 @@
     return Number(device?.productId ?? device?.productID ?? 0);
   }
 
+  function getTransportMetaForPid(pid) {
+    return PID_TRANSPORT_META[Number(pid)] || null;
+  }
+
   function getFeatureReportIdForPid(pid) {
     const rid = PID_FEATURE_REPORT_ID[Number(pid)];
+    return Number.isFinite(rid) ? clampU8(rid) : 0x00;
+  }
+
+  function getWebHidFeatureReportIdForPid(pid) {
+    const rid = PID_WEBHID_FEATURE_REPORT_ID[Number(pid)];
+    return Number.isFinite(rid) ? clampU8(rid) : 0x00;
+  }
+
+  function getEventReportIdForPid(pid) {
+    const rid = PID_EVENT_REPORT_ID[Number(pid)];
     return Number.isFinite(rid) ? clampU8(rid) : 0x00;
   }
 
@@ -288,12 +404,14 @@
       this.sendTimeoutMs = 1500;
       this.readTimeoutMs = 1500;
       this._featureReportIds = [0];
+      this._transactionId = 0;
     }
 
     setDevice(device, productId = 0) {
       this.device = device || null;
       this.productId = Number(productId || 0);
       this._featureReportIds = this._collectFeatureReportIds();
+      this._transactionId = 0;
     }
 
     _requireOpenDevice() {
@@ -302,8 +420,26 @@
     }
 
     _collectFeatureReportIds() {
-      // No report-id probing. Use the OpenRazer-aligned fixed report index.
-      return [getFeatureReportIdForPid(this.productId)];
+      // Official Synapse WebHID mouse path uses reportId 0 for feature I/O.
+      // The model-level feature/event report ids remain available as semantic metadata.
+      return [getWebHidFeatureReportIdForPid(this.productId)];
+    }
+
+    _nextTransactionId() {
+      // Match rzDevice25: return current counter, then increment, and wrap before 31.
+      if (this._transactionId === 31) this._transactionId = 0;
+      const tx = this._transactionId;
+      this._transactionId += 1;
+      return clampU8(tx);
+    }
+
+    _prepareRequestBytes(packet) {
+      const raw = packet instanceof Uint8Array
+        ? ProtocolCodec.fitReport(packet)
+        : ProtocolCodec.encodeRazerReport(packet || {});
+      const currentTx = clampU8(raw[1] ?? 0);
+      if (currentTx === 0xff) return new Uint8Array(raw);
+      return ProtocolCodec.withTransactionId(raw, this._nextTransactionId());
     }
 
     async _withTimeout(promise, timeoutMs, code, message) {
@@ -337,22 +473,19 @@
     }
 
     /**
-     * Send one command packet and wait for a matching response.
-     * Matching rule follows openrazer: remainingPackets + class + commandId.
+     * Send one official Razer command frame and wait for a matching response.
+     * Matching rule follows Synapse Web: transactionId + commandClass + commandId.
      */
     async sendAndWait(packet, opts = {}) {
       return this.queue.enqueue(async () => {
         this._requireOpenDevice();
 
-        const requestBytes = packet instanceof Uint8Array
-          ? ProtocolCodec.fitReport(packet)
-          : ProtocolCodec.encodeRazerReport(packet || {});
-
+        const requestBytes = this._prepareRequestBytes(packet);
         const request = ProtocolCodec.parseRazerReport(requestBytes);
 
-        const reportId = Number(this._featureReportIds[0] ?? getFeatureReportIdForPid(this.productId));
+        const reportId = Number(this._featureReportIds[0] ?? getWebHidFeatureReportIdForPid(this.productId));
 
-        const busyRetry = RAZER_BUSY_RETRY;
+        const retryBudget = RAZER_BUSY_RETRY;
         const waitMs = Number.isFinite(Number(opts.waitMs)) ? Number(opts.waitMs) : getWaitMsForPid(this.productId);
         const responseValidator = typeof opts.responseValidator === "function"
           ? opts.responseValidator
@@ -360,7 +493,7 @@
 
         let lastErr = null;
 
-        for (let attempt = 0; attempt <= busyRetry; attempt++) {
+        for (let attempt = 0; attempt <= retryBudget; attempt++) {
           try {
             await this._sendFeature(reportId, requestBytes);
             if (waitMs > 0) await sleep(waitMs);
@@ -373,12 +506,12 @@
               throw new ProtocolError("Response does not match request", "RESPONSE_MISMATCH", {
                 reportId,
                 expected: {
-                  remainingPackets: request.remainingPackets,
+                  transactionId: request.transactionId,
                   commandClass: request.commandClass,
                   commandId: request.commandId,
                 },
                 got: {
-                  remainingPackets: response.remainingPackets,
+                  transactionId: response.transactionId,
                   commandClass: response.commandClass,
                   commandId: response.commandId,
                 },
@@ -393,53 +526,81 @@
               });
             }
 
-            if (response.status === REPORT_STATUS.BUSY) {
-              if (attempt < busyRetry) continue;
-              throw new ProtocolError("Razer device stayed busy", "DEVICE_BUSY", { reportId, attempts: attempt + 1 });
+            switch (response.status) {
+              case REPORT_STATUS.SUCCESS:
+              case REPORT_STATUS.SUCCESSFUL:
+                return response;
+              case REPORT_STATUS.NEW_COMMAND:
+                throw new ProtocolError("Razer device returned NEW_COMMAND", "DEVICE_COMMAND_NEW_COMMAND", {
+                  reportId,
+                  response,
+                });
+              case REPORT_STATUS.BUSY:
+                throw new ProtocolError("Razer device returned BUSY", "DEVICE_BUSY", {
+                  reportId,
+                  response,
+                  attempts: attempt + 1,
+                });
+              case REPORT_STATUS.FAIL:
+              case REPORT_STATUS.FAILURE:
+                throw new ProtocolError("Razer command failed", "DEVICE_COMMAND_FAILURE", {
+                  reportId,
+                  response,
+                });
+              case REPORT_STATUS.TIMEOUT:
+                throw new ProtocolError("Razer command timeout status", "DEVICE_COMMAND_TIMEOUT", {
+                  reportId,
+                  response,
+                });
+              case REPORT_STATUS.NOT_SUPPORTED:
+                throw new ProtocolError("Razer command not supported", "DEVICE_COMMAND_NOT_SUPPORTED", {
+                  reportId,
+                  response,
+                });
+              default:
+                throw new ProtocolError("Unknown Razer command status", "DEVICE_COMMAND_UNKNOWN_STATUS", {
+                  reportId,
+                  response,
+                });
             }
-
-            if (response.status === REPORT_STATUS.FAILURE) {
-              throw new ProtocolError("Razer command failed", "DEVICE_COMMAND_FAILURE", { reportId, response });
-            }
-            if (response.status === REPORT_STATUS.TIMEOUT) {
-              throw new ProtocolError("Razer command timeout status", "DEVICE_COMMAND_TIMEOUT", { reportId, response });
-            }
-            if (response.status === REPORT_STATUS.NOT_SUPPORTED) {
-              throw new ProtocolError("Razer command not supported", "DEVICE_COMMAND_NOT_SUPPORTED", { reportId, response });
-            }
-
-            return response;
           } catch (err) {
             lastErr = err;
             const name = String(err?.name || "");
             const msg = String(err?.message || "").toLowerCase();
             const code = String(err?.code || "");
 
-            // Keep retries on the same fixed report-id; never switch IDs.
+            if (
+              code === "DEVICE_COMMAND_NOT_SUPPORTED"
+              || code === "DEVICE_COMMAND_UNKNOWN_STATUS"
+            ) {
+              throw err;
+            }
+
             const isNotAllowed = name === "NotAllowedError" || msg.includes("notallowederror");
             const isFeatureWriteErr = msg.includes("failed to write the feature report");
             const isFeatureReadErr = msg.includes("failed to receive the feature report")
               || msg.includes("failed to read the feature report");
-
             const isPermissionPathErr = isNotAllowed || isFeatureWriteErr || isFeatureReadErr;
 
             if (isPermissionPathErr) {
-              const permissionRetryBudget = Math.min(busyRetry, RAZER_NOT_ALLOWED_SAME_ID_RETRY);
-              if (attempt < permissionRetryBudget) {
-                if (RAZER_RETRY_BACKOFF_MS > 0) await sleep(RAZER_RETRY_BACKOFF_MS);
-                continue;
-              }
-              throw err;
+              const permissionRetryBudget = Math.min(retryBudget, RAZER_NOT_ALLOWED_SAME_ID_RETRY);
+              if (attempt >= permissionRetryBudget) throw err;
             }
 
             if (
               code === "IO_READ_TIMEOUT"
+              || code === "DEVICE_COMMAND_NEW_COMMAND"
+              || code === "DEVICE_BUSY"
+              || code === "DEVICE_COMMAND_FAILURE"
+              || code === "DEVICE_COMMAND_TIMEOUT"
               || code === "RESPONSE_MISMATCH"
               || code === "RESPONSE_VALIDATION_FAILED"
+              || isPermissionPathErr
             ) {
               if (RAZER_RETRY_BACKOFF_MS > 0) await sleep(RAZER_RETRY_BACKOFF_MS);
+              if (attempt < retryBudget) continue;
             }
-            if (attempt >= busyRetry) throw err;
+            throw err;
           }
         }
 
@@ -473,9 +634,19 @@
   const ProtocolCodec = Object.freeze({
     fitReport(raw) {
       const src = toDataViewU8(raw);
+      if (src.byteLength === RAZER_REPORT_LEN + 1) {
+        return src.slice(1, RAZER_REPORT_LEN + 1);
+      }
       if (src.byteLength === RAZER_REPORT_LEN) return src;
       const out = new Uint8Array(RAZER_REPORT_LEN);
-      out.set(src.subarray(0, RAZER_REPORT_LEN));
+      out.set(src.subarray(0, Math.min(src.byteLength, RAZER_REPORT_LEN)));
+      return out;
+    },
+
+    withTransactionId(reportBytes, transactionId) {
+      const out = new Uint8Array(ProtocolCodec.fitReport(reportBytes));
+      out[1] = clampU8(transactionId);
+      out[88] = ProtocolCodec.calcChecksum(out);
       return out;
     },
 
@@ -553,7 +724,7 @@
       const req = request?.raw ? request : ProtocolCodec.parseRazerReport(request);
       const res = response?.raw ? response : ProtocolCodec.parseRazerReport(response);
       return (
-        req.remainingPackets === res.remainingPackets &&
+        req.transactionId === res.transactionId &&
         req.commandClass === res.commandClass &&
         req.commandId === res.commandId
       );
@@ -2031,6 +2202,13 @@
     return RETRYABLE_REP4_READ_ERROR_CODES.has(String(err?.code || ""));
   }
 
+  // Safety latch:
+  // The current local Razer button-mapping protocol path is not aligned with the
+  // official V4 OBM packet model yet. Until that path is rebuilt against the
+  // official bundle end-to-end, do not send button-mapping traffic from this driver.
+  const RAZER_BUTTON_MAPPING_DISABLED_REASON =
+    "Razer button-mapping protocol is temporarily disabled until the official packet model is fully verified";
+
   function resolveActionFromLabel(btnId, label) {
     const b = clampInt(btnId, 1, 6);
     const canonical = normalizeActionLabel(label);
@@ -2083,6 +2261,8 @@
       this._device = null;
       this._eventDevice = null;
       this._attachedInputDevice = null;
+      this._transportPid = 0;
+      this._sessionPid = 0;
       this._driver = new UniversalHidDriver();
       this._planner = new CommandPlanner(0);
       this._opQueue = new SendQueue();
@@ -2105,23 +2285,41 @@
       return this._device;
     }
 
+    set eventDevice(dev) {
+      this._setSessionDevices(this._device || null, dev || null);
+    }
+
     get eventDevice() {
       return this._eventDevice;
+    }
+
+    _resolveTransportPid(controlDevice = this._device) {
+      return normalizePid(controlDevice);
+    }
+
+    _resolveSessionPid(controlDevice = this._device) {
+      return normalizePid(controlDevice);
     }
 
     _setSessionDevices(controlDevice, eventDevice) {
       this._detachInputReportListener();
       this._device = controlDevice || null;
       this._eventDevice = eventDevice || null;
-      const pid = normalizePid(this._device);
-      this._planner.setProductId(pid);
-      this._driver.setDevice(this._device, pid);
+      this._transportPid = this._resolveTransportPid(this._device);
+      this._sessionPid = this._resolveSessionPid(this._device);
+      this._planner.setProductId(this._sessionPid);
+      this._driver.setDevice(this._device, this._transportPid);
       this._cfg = this._makeDefaultCfg();
       this._syncCapabilitiesSnapshot();
     }
 
     _resolveInputDevice() {
-      return this._eventDevice || this._device || null;
+      const eventDevice = (
+        this._eventDevice
+        && this._eventDevice !== this._device
+        && this._eventDevice.opened
+      ) ? this._eventDevice : null;
+      return eventDevice || this._device || null;
     }
 
     matchesHidDevice(device) {
@@ -2143,7 +2341,11 @@
     }
 
     _pid() {
-      return normalizePid(this._device);
+      return this._sessionPid || this._resolveSessionPid(this._device);
+    }
+
+    _transportPidValue() {
+      return this._transportPid || this._resolveTransportPid(this._device);
     }
 
     _caps() {
@@ -2151,20 +2353,19 @@
     }
 
     _ensureSupported() {
-      const pid = this._pid();
-      ensureSupportedPid(pid);
-      return pid;
+      const sessionPid = this._pid();
+      const transportPid = this._transportPidValue();
+      ensureSupportedPid(sessionPid);
+      if (transportPid && transportPid !== sessionPid) ensureSupportedPid(transportPid);
+      return sessionPid;
     }
 
     async _ensureOpen() {
       if (!this.device) throw new ProtocolError("No HID device assigned", "NO_DEVICE");
       this._ensureSupported();
-      const needsOpen = (
-        !this.device.opened
-        || (this.eventDevice && this.eventDevice !== this.device && !this.eventDevice.opened)
-      );
+      const needsOpen = !this.device.opened;
       if (needsOpen) {
-        await this.open();
+        await this.open({ openEventDevice: false });
         return;
       }
       const inputDevice = this._resolveInputDevice();
@@ -2246,9 +2447,11 @@
       if (this._closed) return;
 
       const reportId = clampU8(event?.reportId ?? 0);
+      const expectedReportId = getEventReportIdForPid(this._pid());
       const reportBytes = toDataViewU8(event?.data);
       this._emitRawReport({
         reportId,
+        expectedReportId,
         bytes: new Uint8Array(reportBytes || []),
         timestamp: Number(event?.timeStamp ?? Date.now()),
       });
@@ -2282,7 +2485,7 @@
 
       const cfg = {
         capabilities: this._capabilitiesSnapshot(caps),
-        deviceName: this.device?.productName ? String(this.device.productName) : (PID_NAME[pid] || "Razer Mouse"),
+        deviceName: PID_NAME[pid] || (this.device?.productName ? String(this.device.productName) : "Razer Mouse"),
         firmwareVersion: "",
         serial: "",
         pollingHz: caps.pollingMode === "v2" ? 1000 : 1000,
@@ -2327,9 +2530,15 @@
       return cfg;
     }
 
-    async open() {
+    async open(opts = {}) {
+      const options = isObject(opts) ? opts : {};
+      const {
+        openEventDevice = true,
+        tolerateEventDeviceOpenFailure = false,
+      } = options;
       if (!this.device) throw new ProtocolError("open() requires a HID device", "NO_DEVICE");
       const pid = this._ensureSupported();
+      const transportPid = this._transportPidValue();
       const controlDevice = this.device;
       const eventDevice = (this.eventDevice && this.eventDevice !== controlDevice) ? this.eventDevice : null;
       let openedControl = false;
@@ -2346,9 +2555,21 @@
         }
 
         this._closed = false;
-        this._driver.setDevice(controlDevice, pid);
+        this._driver.setDevice(controlDevice, transportPid);
         this._planner.setProductId(pid);
-        this._cfg = this._makeDefaultCfg();
+        this._cfg = Object.assign({}, this._makeDefaultCfg(), isObject(this._cfg) ? this._cfg : {});
+        this._detachInputReportListener();
+
+        if (openEventDevice && eventDevice && !eventDevice.opened) {
+          try {
+            await eventDevice.open();
+            openedEvent = true;
+          } catch (err) {
+            if (!tolerateEventDeviceOpenFailure) throw err;
+            console.warn("[Razer] Event device open failed during bootstrap", err);
+          }
+        }
+
         this._attachInputReportListener();
       } catch (err) {
         this._closed = true;
@@ -2361,28 +2582,9 @@
       if (RAZER_POST_OPEN_SETTLE_MS > 0) {
         await sleep(RAZER_POST_OPEN_SETTLE_MS);
       }
-
-      let updates = null;
-      try {
-        updates = await this._readDeviceStateSnapshot({ strictButtonMappingRead: true });
-      } catch (e) {
-        const msg = String(e?.message || e);
-        throw new ProtocolError(`Initial state read failed: ${msg}`, "INITIAL_READ_FAIL", { cause: e });
-      }
-      if (updates && Object.keys(updates).length) {
-        this._cfg = Object.assign({}, this._cfg, updates);
-      }
-      this._emitConfig();
-
-      if (this._caps().battery) {
-        this._emitBattery({
-          batteryPercent: this._cfg.batteryPercent,
-          batteryIsCharging: this._cfg.batteryIsCharging,
-        });
-      }
     }
 
-    // Unified session bootstrap entry: open -> initial read -> timeout/retry -> cache fallback,
+    // Unified session bootstrap entry: open -> optional initial read -> timeout/retry -> cache fallback,
     // while guaranteeing at least one _emitConfig() call.
     async bootstrapSession(opts = {}) {
       const options = isObject(opts) ? opts : {};
@@ -2394,14 +2596,11 @@
         readRetry = 2,
         openRetryDelayMs = 120,
         readRetryDelayMs = 120,
-        readTimeoutMs = 1200,
+        readTimeoutMs = 2000,
+        sendTimeoutMs = null,
         useCacheFallback = true,
+        initialReadMode = "full",
       } = options;
-      // Single-read strategy: the initial read is completed inside open().
-      // readRetry/readRetryDelayMs/readTimeoutMs are currently kept for interface compatibility.
-      void readRetry;
-      void readRetryDelayMs;
-      void readTimeoutMs;
 
       if (hasDevice || hasEventDevice) {
         const nextControlDevice = hasDevice ? (options.device || null) : this.device;
@@ -2411,16 +2610,32 @@
 
       const cachedCfg = this.getCachedConfig();
       const maxOpenAttempts = clampInt(openRetry, 1, 10);
+      const maxReadAttempts = clampInt(readRetry, 1, 10);
       const openDelayMs = clampInt(openRetryDelayMs, 0, 5000);
+      const readDelayMs = clampInt(readRetryDelayMs, 0, 5000);
+      const normalizedInitialReadMode = String(initialReadMode || "full").trim().toLowerCase();
+      const normalizedReason = String(reason || "").trim().toLowerCase();
+      const driverReadTimeoutMs = clampInt(readTimeoutMs, 250, 10_000);
+      const driverSendTimeoutMs = clampInt(
+        sendTimeoutMs == null ? Math.max(driverReadTimeoutMs, 1500) : sendTimeoutMs,
+        250,
+        10_000
+      );
+      const useConnectButtonMappingRead = normalizedReason === "connect";
+
+      this._driver.readTimeoutMs = driverReadTimeoutMs;
+      this._driver.sendTimeoutMs = driverSendTimeoutMs;
 
       let openAttempts = 0;
       let readAttempts = 0;
       let openErr = null;
       for (let i = 0; i < maxOpenAttempts; i++) {
         openAttempts = i + 1;
-        readAttempts = openAttempts;
         try {
-          await this.open();
+          await this.open({
+            openEventDevice: normalizedInitialReadMode === "none",
+            tolerateEventDeviceOpenFailure: normalizedInitialReadMode === "none",
+          });
           openErr = null;
           break;
         } catch (e) {
@@ -2429,14 +2644,48 @@
         }
       }
 
+      let initialReadErr = null;
+      if (!openErr && normalizedInitialReadMode !== "none") {
+        for (let i = 0; i < maxReadAttempts; i++) {
+          readAttempts = i + 1;
+          try {
+            const updates = await this._readDeviceStateSnapshot({
+              strictButtonMappingRead: !useConnectButtonMappingRead,
+              connectButtonMappingRead: useConnectButtonMappingRead,
+            });
+            if (updates && Object.keys(updates).length) {
+              this._cfg = Object.assign({}, this._cfg, updates);
+            }
+            initialReadErr = null;
+            break;
+          } catch (e) {
+            const msg = String(e?.message || e);
+            initialReadErr = new ProtocolError(`Initial state read failed: ${msg}`, "INITIAL_READ_FAIL", { cause: e });
+            if (i < maxReadAttempts - 1 && readDelayMs > 0) await sleep(readDelayMs);
+          }
+        }
+      }
+
+      if (!openErr && normalizedInitialReadMode !== "none" && this.eventDevice && this.eventDevice !== this.device) {
+        try {
+          await this.open({
+            openEventDevice: true,
+            tolerateEventDeviceOpenFailure: true,
+          });
+        } catch (eventErr) {
+          console.warn("[Razer] Event device bootstrap open failed", eventErr);
+        }
+      }
+
       let usedCacheFallback = false;
-      if (openErr) {
-        const isInitialReadFail = String(openErr?.code || "") === "INITIAL_READ_FAIL";
+      const bootstrapErr = initialReadErr || openErr;
+      if (bootstrapErr) {
+        const isInitialReadFail = String(bootstrapErr?.code || "") === "INITIAL_READ_FAIL";
         if (isInitialReadFail && useCacheFallback && cachedCfg && typeof cachedCfg === "object") {
           this._cfg = Object.assign({}, cachedCfg);
           usedCacheFallback = true;
         } else {
-          throw openErr;
+          throw bootstrapErr;
         }
       }
 
@@ -2455,6 +2704,9 @@
           openAttempts,
           readAttempts,
           usedCacheFallback,
+          initialReadMode: normalizedInitialReadMode,
+          readTimeoutMs: driverReadTimeoutMs,
+          sendTimeoutMs: driverSendTimeoutMs,
         },
       };
     }
@@ -2675,79 +2927,12 @@
     async setButtonMappingBySelect(btnId, labelOrObj) {
       return this._opQueue.enqueue(async () => {
         await this._ensureOpen();
-        const pid = this._pid();
-        const b = clampInt(btnId, 1, 6);
-        const sourceCode = REP4_SOURCE_CODE_BY_BUTTON_ID[b];
-        if (!Number.isFinite(sourceCode)) {
-          throw new ProtocolError(`Btn${b} mapping source code is not defined`, "FEATURE_UNSUPPORTED", {
-            btnId: b,
-            pid,
-          });
-        }
-        let action = null;
-        let source = "";
-        let rep4Action = null;
-
-        if (typeof labelOrObj === "string") {
-          const resolved = resolveActionFromLabel(b, labelOrObj);
-          if (!resolved) {
-            throw new ProtocolError(`Unknown key action label: ${labelOrObj}`, "BAD_PARAM", { btnId: b, label: labelOrObj });
-          }
-          action = resolved.action;
-          source = resolved.source || resolved.label || "";
-          rep4Action = resolveRep4ActionFromLabel(resolved.label || source || labelOrObj);
-        } else if (isObject(labelOrObj)) {
-          action = {
-            funckey: clampU8(labelOrObj.funckey ?? labelOrObj.func ?? 0),
-            keycode: clampInt(labelOrObj.keycode ?? labelOrObj.code ?? 0, 0, 0xffff),
-          };
-          source = String(labelOrObj.source ?? labelOrObj.label ?? "custom").trim() || "custom";
-          rep4Action = resolveRep4ActionFromObject(
-            Object.assign({}, labelOrObj, {
-              funckey: action.funckey,
-              keycode: action.keycode,
-              source,
-            })
-          );
-        } else {
-          throw new ProtocolError("key action must be label string or {funckey,keycode}", "BAD_PARAM");
-        }
-
-        if (!Array.isArray(rep4Action) || rep4Action.length !== 4) {
-          throw new ProtocolError("Key action is not supported by Razer REP4 mapping write path", "FEATURE_UNSUPPORTED", {
-            btnId: b,
-            pid,
-            sourceCode,
-            label: typeof labelOrObj === "string" ? labelOrObj : (labelOrObj?.label ?? labelOrObj?.source ?? source),
-            funckey: action?.funckey,
-            keycode: action?.keycode,
-          });
-        }
-
-        const tx = txForField(pid, "buttonMapping");
-        const packet = ProtocolCodec.commands.setButtonMappingRep4(tx, sourceCode, rep4Action);
-        await this._driver.sendAndWait(packet);
-
-        const next = Array.isArray(this._cfg?.buttonMappings)
-          ? this._cfg.buttonMappings.slice(0, 6)
-          : buildDefaultRazerButtonMappings();
-        while (next.length < 6) {
-          next.push({ source: "", funckey: 0x00, keycode: 0x0000 });
-        }
-        next[b - 1] = {
-          source,
-          funckey: clampU8(action.funckey),
-          keycode: clampInt(action.keycode, 0, 0xffff),
-        };
-
-        this._cfg = Object.assign({}, this._cfg, { buttonMappings: next });
-        this._emitConfig();
-        return {
-          btnId: b,
-          sourceCode,
-          rep4Action: rep4Action.slice(0, 4),
-          action: next[b - 1],
-        };
+        void btnId;
+        void labelOrObj;
+        throw new ProtocolError(RAZER_BUTTON_MAPPING_DISABLED_REASON, "FEATURE_UNAVAILABLE", {
+          feature: "buttonMappings",
+          reason: "official_packet_model_not_verified",
+        });
       });
     }
 
@@ -2770,88 +2955,23 @@
       }
     }
 
-    async _readButtonMappingsSnapshot({ strictStability = false } = {}) {
-      const pid = this._ensureSupported();
-      const tx = txForField(pid, "buttonMapping");
-      const out = Array.from({ length: 6 }, () => buildUnknownRep4Entry());
+    async _readButtonMappingsSnapshot({ strictStability = false, connectFastPath = false } = {}) {
+      void strictStability;
+      void connectFastPath;
+      this._ensureSupported();
 
-      for (let btnId = 1; btnId <= 6; btnId++) {
-        const sourceCode = REP4_SOURCE_CODE_BY_BUTTON_ID[btnId];
-        if (!Number.isFinite(sourceCode)) continue;
-        let resolved = null;
-        let lastQuadSig = "";
-        let stableHits = 0;
-        const cachedMapping = normalizeButtonMappingEntry(this._cfg?.buttonMappings?.[btnId - 1]);
+      const cached = Array.isArray(this._cfg?.buttonMappings) && this._cfg.buttonMappings.length
+        ? this._cfg.buttonMappings
+        : buildDefaultRazerButtonMappings();
 
-        // Retry for transient empty/misaligned reads and require stable decode.
-        for (let attempt = 1; attempt <= REP4_READ_MAX_ATTEMPTS; attempt++) {
-          let readRes = null;
-          try {
-            readRes = await this._safeQuery(
-              ProtocolCodec.commands.getButtonMappingRep4(tx, sourceCode),
-              null,
-              {
-                // Reject stale/misaligned packets before decode layer maps button slots.
-                responseValidator: (_request, response) => {
-                  const args = response?.arguments;
-                  if (!(args instanceof Uint8Array) || args.length < 3) return false;
-                  const sourceEcho = ((clampU8(args[2]) << 8) | clampU8(args[1])) & 0xffff;
-                  return sourceEcho === clampU16(sourceCode);
-                },
-              }
-            );
-            if (!readRes?.arguments) {
-              throw new ProtocolError("REP4 mapping response is empty", "REP4_READ_EMPTY", {
-                btnId,
-                sourceCode: clampU16(sourceCode),
-                attempt,
-              });
-            }
-
-            const quadlet = extractRep4ReadQuadlet(btnId, sourceCode, readRes);
-            const sig = quadletKey(quadlet[0], quadlet[1], quadlet[2], quadlet[3]);
-            if (sig === lastQuadSig) {
-              stableHits += 1;
-            } else {
-              lastQuadSig = sig;
-              stableHits = 1;
-            }
-
-            if (!isKnownRep4Quadlet(quadlet)) {
-              throw new ProtocolError("REP4 mapping quadlet is unknown", "REP4_READ_UNKNOWN_ACTION", {
-                btnId,
-                sourceCode: clampU16(sourceCode),
-                attempt,
-                quadlet: quadlet.slice(0, 4),
-              });
-            }
-
-            const candidate = resolveActionFromRep4Quadlet(btnId, quadlet);
-            const needStrictStability = !!strictStability || !isSameButtonAction(candidate, cachedMapping);
-            const requiredHits = needStrictStability ? REP4_READ_STABLE_HITS_REQUIRED : 1;
-
-            if (stableHits < requiredHits) {
-              throw new ProtocolError("REP4 mapping read is unstable", "REP4_READ_UNSTABLE", {
-                btnId,
-                sourceCode: clampU16(sourceCode),
-                attempt,
-                stableHits,
-                required: requiredHits,
-              });
-            }
-
-            resolved = candidate;
-            break;
-          } catch (err) {
-            const canRetry = isRetryableRep4ReadError(err) && attempt < REP4_READ_MAX_ATTEMPTS;
-            if (!canRetry) break;
-            if (REP4_READ_RETRY_DELAY_MS > 0) {
-              await sleep(REP4_READ_RETRY_DELAY_MS);
-            }
-          }
-        }
-
-        out[btnId - 1] = resolved || buildUnknownRep4Entry();
+      const out = [];
+      for (let i = 0; i < 6; i++) {
+        out.push(
+          normalizeButtonMappingEntry(
+            cached[i],
+            DEFAULT_RAZER_BUTTON_SOURCE_BY_BUTTON[i + 1]
+          )
+        );
       }
 
       return out;
@@ -2908,12 +3028,12 @@
     }
 
     // Read full runtime snapshot used by open()/requestConfig().
-    async _readDeviceStateSnapshot({ strictButtonMappingRead = false } = {}) {
+    async _readDeviceStateSnapshot({ strictButtonMappingRead = false, connectButtonMappingRead = false } = {}) {
       const pid = this._ensureSupported();
       const caps = this._caps();
       const tx = txForField(pid, "snapshot");
       const updates = {
-        deviceName: this.device?.productName ? String(this.device.productName) : (PID_NAME[pid] || "Razer Mouse"),
+        deviceName: PID_NAME[pid] || (this.device?.productName ? String(this.device.productName) : "Razer Mouse"),
         capabilities: this._capabilitiesSnapshot(caps),
       };
 
@@ -3018,6 +3138,7 @@
 
       const buttonMappings = await this._readButtonMappingsSnapshot({
         strictStability: !!strictButtonMappingRead,
+        connectFastPath: !!connectButtonMappingRead,
       });
       if (Array.isArray(buttonMappings) && buttonMappings.length) {
         updates.buttonMappings = buttonMappings;
@@ -3043,9 +3164,14 @@
     defaultFilters: SUPPORTED_PIDS.map((productId) => ({
       vendorId: RAZER_VENDOR_ID,
       productId,
+      usagePage: RAZER_WEBHID_CONTROL_USAGE_PAGE,
     })),
     isSupportedPid(productId) {
       return SUPPORTED_PID_SET.has(Number(productId));
+    },
+    getTransportMeta(productId) {
+      const meta = getTransportMetaForPid(productId);
+      return meta ? Object.assign({}, meta) : null;
     },
   };
 
