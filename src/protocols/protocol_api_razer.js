@@ -140,6 +140,91 @@
     TX_DEFAULT: 0x1f,
   });
 
+  const OFFICIAL_MOUSE_PROFILE_ID = 0x01;
+  const OFFICIAL_PROXIMITY_CLASS_ID = 0x00;
+  const OFFICIAL_PROXIMITY_SENSOR_ID = 0x04;
+
+  const OFFICIAL_BUTTON_MODE = Object.freeze({
+    NORMAL: 0x00,
+    HYPERSHIFT: 0x01,
+  });
+
+  const OFFICIAL_OBM_SLOT_TO_BUTTON_ID = Object.freeze({
+    1: 0x01,
+    2: 0x02,
+    3: 0x03,
+    4: 0x05,
+    5: 0x04,
+    6: 0x60,
+  });
+
+  const OFFICIAL_OBM_FUNCTION_ID = Object.freeze({
+    OFF: 0x00,
+    BUTTON_CODE: 0x01,
+    KEY_CODE: 0x02,
+    DPI: 0x06,
+    PROFILE: 0x07,
+    POWER_KEYS: 0x09,
+    MEDIA_KEYS: 0x0a,
+    DOUBLE_CLICK: 0x0b,
+    MODE_BUTTON_KEY: 0x0c,
+    TURBO_MODE_KEY: 0x0d,
+    TURBO_MODE_BUTTON: 0x0e,
+    RAZER_KEY: 0x11,
+    SCROLL_WHEEL_MODE: 0x12,
+    WIN8_SHORTCUTS_KEY: 0x15,
+  });
+
+  const OFFICIAL_OBM_BUTTON_TARGET = Object.freeze({
+    LEFT_BUTTON: 0x01,
+    RIGHT_BUTTON: 0x02,
+    SCROLL_BUTTON: 0x03,
+    BUTTON_4: 0x04,
+    BUTTON_5: 0x05,
+    SCROLL_UP: 0x09,
+    SCROLL_DOWN: 0x0a,
+    DPI_CYCLE_UP: 0x60,
+    DPI_CYCLE_DOWN: 0x61,
+  });
+
+  const OFFICIAL_MODIFIER_BITS = Object.freeze({
+    LEFT_CTRL: 0x01,
+    LEFT_SHIFT: 0x02,
+    LEFT_ALT: 0x04,
+    LEFT_GUI: 0x08,
+    RIGHT_CTRL: 0x10,
+    RIGHT_SHIFT: 0x20,
+    RIGHT_ALT: 0x40,
+    RIGHT_GUI: 0x80,
+  });
+
+  const OFFICIAL_MEDIA_USAGE = Object.freeze({
+    MUTE_VOLUME: 0x00e2,
+    PREVIOUS_TRACK: 0x00b6,
+    MEDIA_STOP: 0x00b7,
+    NEXT_TRACK: 0x00b5,
+    MEDIA_PLAY_OR_PAUSE: 0x00cd,
+    VOLUME_UP: 0x00e9,
+    VOLUME_DOWN: 0x00ea,
+  });
+
+  const OFFICIAL_WIN8_SHORTCUT = Object.freeze({
+    SCREENSHOT: 99,
+    XBOX_GAME_BAR: 100,
+    CYCLE_APPS: 101,
+  });
+
+  const OFFICIAL_OBM_SUPPORTED_PID_SET = new Set([
+    PID.VIPER_V3_PRO_WIRED,
+    PID.VIPER_V3_PRO_WIRELESS,
+    PID.VIPER_V4_PRO_WIRED,
+    PID.VIPER_V4_PRO_WIRELESS,
+  ]);
+
+  function supportsOfficialObmForPid(pid) {
+    return OFFICIAL_OBM_SUPPORTED_PID_SET.has(clampU16(pid));
+  }
+
   function buildPidMatrixRow(pid, name, overrides = null) {
     const normalizedPid = clampU16(pid);
     return Object.freeze(Object.assign({
@@ -311,9 +396,14 @@
   const SUPPORTED_PIDS = Object.freeze(PID_CAPABILITY_MATRIX.map((row) => row.pid));
   const SUPPORTED_PID_SET = new Set(SUPPORTED_PIDS);
 
+  const SNAPSHOT_READ_MODE = Object.freeze({
+    CONNECT_FULL: "connect_full",
+    REFRESH_FULL: "refresh_full",
+  });
+
   function getWaitMsForPid(pid) {
     void pid;
-    return 60;
+    return 0;
   }
 
   function buildCapabilities(pid) {
@@ -767,14 +857,14 @@
         });
       },
 
-      setDpiXY(tx, dpiX, dpiY) {
+      setDpiXY(tx, dpiX, dpiY, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x04,
           commandId: 0x05,
           dataSize: 0x07,
           arguments: [
-            RAZER_CONST.VARSTORE,
+            clampU8(profileId),
             (clampU16(dpiX) >> 8) & 0xff,
             clampU16(dpiX) & 0xff,
             (clampU16(dpiY) >> 8) & 0xff,
@@ -785,23 +875,30 @@
         });
       },
 
-      getDpiXY(tx, variableStorage = RAZER_CONST.NOSTORE) {
+      getDpiXY(tx, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x04,
           commandId: 0x85,
           dataSize: 0x07,
-          arguments: [clampU8(variableStorage)],
+          arguments: [clampU8(profileId)],
         });
       },
 
-      setDpiStages(tx, stages, activeStageOneBased) {
+      setDpiStages(tx, stages, activeStageIndex, profileId = OFFICIAL_MOUSE_PROFILE_ID, stageIds = null) {
         const count = clampInt(stages.length, 1, RAZER_MAX_DPI_STAGES);
         const argsLen = 3 + count * 7;
-
         const args = new Uint8Array(argsLen);
-        args[0] = RAZER_CONST.VARSTORE;
-        args[1] = clampInt(activeStageOneBased, 1, count);
+        args[0] = clampU8(profileId);
+        const ids = Array.isArray(stageIds) ? stageIds : [];
+        const resolvedStageIds = [];
+        for (let i = 0; i < count; i++) {
+          const fallbackId = i + 1;
+          const stageId = clampU8(ids[i] ?? fallbackId);
+          resolvedStageIds.push(stageId);
+        }
+        const activeIdx = clampInt(activeStageIndex, 0, count - 1);
+        args[1] = resolvedStageIds[activeIdx] ?? resolvedStageIds[0] ?? 0x01;
         args[2] = count;
 
         let offset = 3;
@@ -809,7 +906,7 @@
           const stage = stages[i] || { x: 800, y: 800 };
           const x = clampU16(stage.x);
           const y = clampU16(stage.y);
-          args[offset++] = i;
+          args[offset++] = resolvedStageIds[i];
           args[offset++] = (x >> 8) & 0xff;
           args[offset++] = x & 0xff;
           args[offset++] = (y >> 8) & 0xff;
@@ -830,67 +927,49 @@
       },
 
 
-      getDpiStages(tx, variableStorage = RAZER_CONST.VARSTORE) {
+      getDpiStages(tx, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x04,
           commandId: 0x86,
           dataSize: 0x26,
-          arguments: [clampU8(variableStorage)],
+          arguments: [clampU8(profileId)],
         });
       },
 
-      setButtonMappingRep4(tx, sourceCode, actionQuad) {
-        const src = clampU16(sourceCode);
-        const action = Array.isArray(actionQuad) ? actionQuad.slice(0, 4) : [];
-        if (action.length !== 4) {
-          throw new ProtocolError("REP4 actionQuad must be [act0,act1,act2,act3]", "BAD_PARAM", {
-            actionQuad,
-          });
-        }
+      getSingleButtonAssignment(tx, profileId = OFFICIAL_MOUSE_PROFILE_ID, buttonId = 0x01) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
-          commandClass: 0x02,
-          commandId: 0x0c,
-          dataSize: 0x0a,
-          // Synapse capture layout:
-          // [01, src_lo, src_hi, act0, act1, act2, act3, 00, 00, 00]
-          arguments: [
-            0x01,
-            src & 0xff,
-            (src >> 8) & 0xff,
-            clampU8(action[0]),
-            clampU8(action[1]),
-            clampU8(action[2]),
-            clampU8(action[3]),
-            0x00,
-            0x00,
-            0x00,
-          ],
+          commandClass: 0x08,
+          commandId: 0x84,
+          dataSize: 0x02,
+          arguments: [clampU8(profileId), clampU8(buttonId)],
         });
       },
 
-      getButtonMappingRep4(tx, sourceCode) {
-        const src = clampU16(sourceCode);
+      setSingleButtonAssignment(
+        tx,
+        profileId = OFFICIAL_MOUSE_PROFILE_ID,
+        buttonId = 0x01,
+        mode = OFFICIAL_BUTTON_MODE.NORMAL,
+        functionId = OFFICIAL_OBM_FUNCTION_ID.OFF,
+        fnDataByteSize = 0,
+        fnDataByte = null
+      ) {
+        const dataArray = fnDataByte instanceof Uint8Array ? fnDataByte : new Uint8Array(fnDataByte || []);
+        const out = new Uint8Array(10);
+        out[0] = clampU8(profileId);
+        out[1] = clampU8(buttonId);
+        out[2] = clampU8(mode);
+        out[3] = clampU8(functionId);
+        out[4] = clampInt(fnDataByteSize, 0, 5);
+        out.set(dataArray.subarray(0, 5), 5);
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
-          commandClass: 0x02,
-          commandId: 0x8c,
-          dataSize: 0x0a,
-          // Readback keeps the same payload envelope as write:
-          // [01, src_lo, src_hi, 00, 00, 00, 00, 00, 00, 00]
-          arguments: [
-            0x01,
-            src & 0xff,
-            (src >> 8) & 0xff,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-          ],
+          commandClass: 0x08,
+          commandId: 0x04,
+          dataSize: out.length,
+          arguments: out,
         });
       },
 
@@ -931,47 +1010,47 @@
         });
       },
 
-      setDynamicSensitivityEnabled(tx, enabled) {
+      setProximitySensorAccelerationState(tx, enabled, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x0b,
           commandId: 0x10,
           dataSize: 0x02,
-          arguments: [0x01, enabled ? 0x01 : 0x00],
+          arguments: [clampU8(profileId), enabled ? 0x01 : 0x00],
         });
       },
 
-      getDynamicSensitivityEnabled(tx) {
+      getProximitySensorAccelerationState(tx, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x0b,
           commandId: 0x90,
           dataSize: 0x02,
-          arguments: [0x01, 0x00],
+          arguments: [clampU8(profileId)],
         });
       },
 
-      setDynamicSensitivityMode(tx, mode) {
+      setProximitySensorAccelerationMode(tx, mode, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x0b,
           commandId: 0x11,
           dataSize: 0x02,
-          arguments: [0x01, clampInt(mode, 0, 2)],
+          arguments: [clampU8(profileId), clampInt(mode, 0, 3)],
         });
       },
 
-      getDynamicSensitivityMode(tx) {
+      getProximitySensorAccelerationMode(tx, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x0b,
           commandId: 0x91,
           dataSize: 0x02,
-          arguments: [0x01, 0x00],
+          arguments: [clampU8(profileId)],
         });
       },
 
-      setSensorAngle(tx, angle) {
+      setSensorAngle(tx, angle, profileId = OFFICIAL_MOUSE_PROFILE_ID, state = 0x01) {
         const a = clampInt(angle, -44, 44);
         const raw = a < 0 ? (0x100 + a) & 0xff : a & 0xff;
         return ProtocolCodec.encodeRazerReport({
@@ -979,94 +1058,96 @@
           commandClass: 0x0b,
           commandId: 0x14,
           dataSize: 0x03,
-          arguments: [0x01, 0x01, raw],
+          arguments: [clampU8(profileId), clampU8(state), raw],
         });
       },
 
-      getSensorAngle(tx) {
+      getSensorAngle(tx, profileId = OFFICIAL_MOUSE_PROFILE_ID) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x0b,
           commandId: 0x94,
           dataSize: 0x03,
-          arguments: [0x01, 0x01, 0x00],
+          arguments: [clampU8(profileId)],
         });
       },
 
-      setSmartTrackingPrelude(tx) {
+      setProximitySensorState(
+        tx,
+        classId = OFFICIAL_PROXIMITY_CLASS_ID,
+        sensorId = OFFICIAL_PROXIMITY_SENSOR_ID,
+        state = true
+      ) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x0b,
           commandId: 0x03,
           dataSize: 0x03,
-          arguments: [0x00, 0x04, 0x01],
+          arguments: [clampU8(classId), clampU8(sensorId), state ? 0x01 : 0x00],
         });
       },
 
-      setSmartTrackingModeSymmetric(tx, level) {
-        return ProtocolCodec.encodeRazerReport({
-          transactionId: tx,
-          commandClass: 0x0b,
-          commandId: 0x0b,
-          dataSize: 0x04,
-          arguments: [0x00, 0x04, 0x01, clampInt(level, 0, 2)],
-        });
-      },
-
-      setSmartTrackingModeAsymmetric(tx) {
-        return ProtocolCodec.encodeRazerReport({
-          transactionId: tx,
-          commandClass: 0x0b,
-          commandId: 0x0b,
-          dataSize: 0x04,
-          arguments: [0x00, 0x04, 0x04, 0x00],
-        });
-      },
-
-      getSmartTrackingMode(tx) {
-        return ProtocolCodec.encodeRazerReport({
-          transactionId: tx,
-          commandClass: 0x0b,
-          commandId: 0x8b,
-          dataSize: 0x04,
-          arguments: [0x00, 0x04, 0x00, 0x00],
-        });
-      },
-
-      setSmartTrackingAsymmetricDistances(tx, liftDistance, landingDistance) {
-        let lift = clampInt(liftDistance, 2, 26);
-        let landing = clampInt(landingDistance, 1, 25);
-        if (landing >= lift) {
-          lift = Math.min(26, landing + 1);
-          if (landing >= lift) landing = Math.max(1, lift - 1);
-        }
-        return ProtocolCodec.encodeRazerReport({
-          transactionId: tx,
-          commandClass: 0x0b,
-          commandId: 0x05,
-          dataSize: 0x0a,
-          arguments: [
-            0x00,
-            0x04,
-            clampU8(lift - 1),
-            clampU8(landing - 1),
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-          ],
-        });
-      },
-
-      getSmartTrackingAsymmetricDistances(tx) {
+      getProximitySensorConfiguration(
+        tx,
+        classId = OFFICIAL_PROXIMITY_CLASS_ID,
+        sensorId = OFFICIAL_PROXIMITY_SENSOR_ID
+      ) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x0b,
           commandId: 0x85,
           dataSize: 0x0a,
-          arguments: [0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+          arguments: [clampU8(classId), clampU8(sensorId)],
+        });
+      },
+
+      setProximitySensorConfiguration(
+        tx,
+        classId = OFFICIAL_PROXIMITY_CLASS_ID,
+        sensorId = OFFICIAL_PROXIMITY_SENSOR_ID,
+        dataArray = null
+      ) {
+        const payload = dataArray instanceof Uint8Array ? dataArray : new Uint8Array(dataArray || []);
+        const args = new Uint8Array(10);
+        args[0] = clampU8(classId);
+        args[1] = clampU8(sensorId);
+        args.set(payload.subarray(0, 8), 2);
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x0b,
+          commandId: 0x05,
+          dataSize: args.length,
+          arguments: args,
+        });
+      },
+
+      getProximitySensorLiftSetting(
+        tx,
+        classId = OFFICIAL_PROXIMITY_CLASS_ID,
+        sensorId = OFFICIAL_PROXIMITY_SENSOR_ID
+      ) {
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x0b,
+          commandId: 0x8b,
+          dataSize: 0x04,
+          arguments: [clampU8(classId), clampU8(sensorId)],
+        });
+      },
+
+      setProximitySensorLiftSetting(
+        tx,
+        classId = OFFICIAL_PROXIMITY_CLASS_ID,
+        sensorId = OFFICIAL_PROXIMITY_SENSOR_ID,
+        liftMode = 0x01,
+        liftHeight = 0x00
+      ) {
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x0b,
+          commandId: 0x0b,
+          dataSize: 0x04,
+          arguments: [clampU8(classId), clampU8(sensorId), clampU8(liftMode), clampU8(liftHeight)],
         });
       },
 
@@ -1214,22 +1295,34 @@
       const declaredCount = clampInt(args[2] ?? 0, 0, RAZER_MAX_DPI_STAGES);
       const maxByPayload = Math.max(0, Math.floor(Math.max(0, payloadSize - 3) / 7));
       const count = clampInt(Math.min(declaredCount, maxByPayload), 0, RAZER_MAX_DPI_STAGES);
-      const activeOneBased = clampInt(args[1] ?? 1, 1, Math.max(1, count));
+      const activeRaw = clampU8(args[1] ?? 0);
       const stages = [];
+      const stageIds = [];
       let offset = 3;
 
       for (let i = 0; i < count; i++) {
-        const dpiOffset = offset + 1;
-        if (dpiOffset + 4 > payloadSize) break;
+        if (offset + 6 >= payloadSize) break;
+        const stageId = clampU8(args[offset]);
         const x = ((args[offset + 1] << 8) | args[offset + 2]) & 0xffff;
         const y = ((args[offset + 3] << 8) | args[offset + 4]) & 0xffff;
-        stages.push({ x: TRANSFORMERS.clampDpi(x), y: TRANSFORMERS.clampDpi(y) });
+        stages.push({ id: stageId, x: TRANSFORMERS.clampDpi(x), y: TRANSFORMERS.clampDpi(y) });
+        stageIds.push(stageId);
         offset += 7;
       }
 
+      let activeDpiStageIndex = stages.findIndex((stage) => stage.id === activeRaw);
+      if (activeDpiStageIndex < 0 && activeRaw >= 1 && activeRaw <= stages.length) {
+        activeDpiStageIndex = activeRaw - 1;
+      } else if (activeDpiStageIndex < 0 && activeRaw < stages.length) {
+        activeDpiStageIndex = activeRaw;
+      }
+      activeDpiStageIndex = clampInt(activeDpiStageIndex, 0, Math.max(0, stages.length - 1));
+
       return {
-        dpiStages: stages,
-        activeDpiStageIndex: clampInt(activeOneBased - 1, 0, Math.max(0, stages.length - 1)),
+        classId: clampU8(args[0] ?? OFFICIAL_MOUSE_PROFILE_ID),
+        stageIds,
+        dpiStages: stages.map((stage) => ({ x: stage.x, y: stage.y })),
+        activeDpiStageIndex,
       };
     },
 
@@ -1254,7 +1347,7 @@
     },
 
     normalizeDynamicSensitivityMode(v) {
-      return clampInt(v, 0, 2);
+      return clampInt(v, 0, 3);
     },
 
     normalizeSmartTrackingMode(v) {
@@ -1349,11 +1442,17 @@
       kind: "virtual",
       priority: 20,
       triggers: ["dpi", "dpiX", "dpiY"],
-      plan({ pid, caps, nextState }) {
+      plan({ pid, caps, nextState, planner }) {
         requireCapability(caps, "dpi", "dpi/dpiX/dpiY", pid);
         const tx = txForField(pid, "dpi");
+        const dpiCtx = planner?.getDpiWriteContext?.() || {};
         return [{
-          packet: ProtocolCodec.commands.setDpiXY(tx, nextState.dpi.x, nextState.dpi.y),
+          packet: ProtocolCodec.commands.setDpiXY(
+            tx,
+            nextState.dpi.x,
+            nextState.dpi.y,
+            dpiCtx.profileId ?? OFFICIAL_MOUSE_PROFILE_ID
+          ),
         }];
       },
     },
@@ -1362,12 +1461,19 @@
       key: "dpiStages",
       kind: "direct",
       priority: 30,
-      plan({ pid, caps, nextState }) {
+      plan({ pid, caps, nextState, planner }) {
         requireCapability(caps, "dpiStages", "dpiStages", pid);
         const tx = txForField(pid, "dpiStages");
-        const active = clampInt(nextState.activeDpiStageIndex, 0, Math.max(0, nextState.dpiStages.length - 1)) + 1;
+        const active = clampInt(nextState.activeDpiStageIndex, 0, Math.max(0, nextState.dpiStages.length - 1));
+        const dpiCtx = planner?.getDpiWriteContext?.() || {};
         return [{
-          packet: ProtocolCodec.commands.setDpiStages(tx, nextState.dpiStages, active),
+          packet: ProtocolCodec.commands.setDpiStages(
+            tx,
+            nextState.dpiStages,
+            active,
+            dpiCtx.profileId ?? OFFICIAL_MOUSE_PROFILE_ID,
+            dpiCtx.stageIds ?? []
+          ),
         }];
       },
     },
@@ -1377,12 +1483,19 @@
       kind: "virtual",
       priority: 31,
       triggers: ["activeDpiStageIndex"],
-      plan({ pid, caps, nextState }) {
+      plan({ pid, caps, nextState, planner }) {
         requireCapability(caps, "dpiStages", "activeDpiStageIndex", pid);
         const tx = txForField(pid, "activeDpiStageIndex");
-        const active = clampInt(nextState.activeDpiStageIndex, 0, Math.max(0, nextState.dpiStages.length - 1)) + 1;
+        const active = clampInt(nextState.activeDpiStageIndex, 0, Math.max(0, nextState.dpiStages.length - 1));
+        const dpiCtx = planner?.getDpiWriteContext?.() || {};
         return [{
-          packet: ProtocolCodec.commands.setDpiStages(tx, nextState.dpiStages, active),
+          packet: ProtocolCodec.commands.setDpiStages(
+            tx,
+            nextState.dpiStages,
+            active,
+            dpiCtx.profileId ?? OFFICIAL_MOUSE_PROFILE_ID,
+            dpiCtx.stageIds ?? []
+          ),
         }];
       },
     },
@@ -1427,7 +1540,7 @@
       plan({ pid, caps, nextState }) {
         requireCapability(caps, "dynamicSensitivity", "dynamicSensitivityEnabled", pid);
         const tx = txForField(pid, "dynamicSensitivity");
-        return [{ packet: ProtocolCodec.commands.setDynamicSensitivityEnabled(tx, nextState.dynamicSensitivityEnabled) }];
+        return [{ packet: ProtocolCodec.commands.setProximitySensorAccelerationState(tx, nextState.dynamicSensitivityEnabled) }];
       },
     },
 
@@ -1442,11 +1555,11 @@
           ? !!patch.dynamicSensitivityEnabled
           : true;
         const seq = [
-          { packet: ProtocolCodec.commands.setDynamicSensitivityEnabled(tx, true) },
-          { packet: ProtocolCodec.commands.setDynamicSensitivityMode(tx, nextState.dynamicSensitivityMode) },
+          { packet: ProtocolCodec.commands.setProximitySensorAccelerationState(tx, true) },
+          { packet: ProtocolCodec.commands.setProximitySensorAccelerationMode(tx, nextState.dynamicSensitivityMode) },
         ];
         if (!explicitEnabled) {
-          seq.push({ packet: ProtocolCodec.commands.setDynamicSensitivityEnabled(tx, false) });
+          seq.push({ packet: ProtocolCodec.commands.setProximitySensorAccelerationState(tx, false) });
         }
         return seq;
       },
@@ -1472,24 +1585,39 @@
         requireCapability(caps, "smartTracking", "smartTracking", pid);
         const tx = txForField(pid, "smartTracking");
         const mode = TRANSFORMERS.normalizeSmartTrackingMode(nextState.smartTrackingMode);
-        const shouldWriteAsymmetricDistance = mode === "asymmetric"
-          && (
-            Object.prototype.hasOwnProperty.call(patch, "smartTrackingLiftDistance")
-            || Object.prototype.hasOwnProperty.call(patch, "smartTrackingLandingDistance")
-          );
-
-        const seq = [{ packet: ProtocolCodec.commands.setSmartTrackingPrelude(tx) }];
+        const seq = [{ packet: ProtocolCodec.commands.setProximitySensorState(tx, OFFICIAL_PROXIMITY_CLASS_ID, OFFICIAL_PROXIMITY_SENSOR_ID, true) }];
         if (mode === "asymmetric") {
-          seq.push({ packet: ProtocolCodec.commands.setSmartTrackingModeAsymmetric(tx) });
-          if (shouldWriteAsymmetricDistance) {
-            const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
-              nextState.smartTrackingLiftDistance,
-              nextState.smartTrackingLandingDistance
-            );
-            seq.push({ packet: ProtocolCodec.commands.setSmartTrackingAsymmetricDistances(tx, dist.lift, dist.landing) });
-          }
+          const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
+            nextState.smartTrackingLiftDistance,
+            nextState.smartTrackingLandingDistance
+          );
+          seq.push({
+            packet: ProtocolCodec.commands.setProximitySensorLiftSetting(
+              tx,
+              OFFICIAL_PROXIMITY_CLASS_ID,
+              OFFICIAL_PROXIMITY_SENSOR_ID,
+              0x04,
+              dist.lift - 1
+            ),
+          });
+          seq.push({
+            packet: ProtocolCodec.commands.setProximitySensorConfiguration(
+              tx,
+              OFFICIAL_PROXIMITY_CLASS_ID,
+              OFFICIAL_PROXIMITY_SENSOR_ID,
+              [0x00, dist.lift - 1, dist.landing - 1]
+            ),
+          });
         } else {
-          seq.push({ packet: ProtocolCodec.commands.setSmartTrackingModeSymmetric(tx, nextState.smartTrackingLevel) });
+          seq.push({
+            packet: ProtocolCodec.commands.setProximitySensorLiftSetting(
+              tx,
+              OFFICIAL_PROXIMITY_CLASS_ID,
+              OFFICIAL_PROXIMITY_SENSOR_ID,
+              0x01,
+              nextState.smartTrackingLevel
+            ),
+          });
         }
         return seq;
       },
@@ -1517,11 +1645,33 @@
     constructor(productId = 0) {
       this.productId = Number(productId || 0);
       this.capabilities = buildCapabilities(this.productId);
+      this._dpiWriteContext = {
+        profileId: OFFICIAL_MOUSE_PROFILE_ID,
+        stageIds: [],
+      };
     }
 
     setProductId(productId) {
       this.productId = Number(productId || 0);
       this.capabilities = buildCapabilities(this.productId);
+      this._dpiWriteContext = {
+        profileId: OFFICIAL_MOUSE_PROFILE_ID,
+        stageIds: [],
+      };
+    }
+
+    setDpiWriteContext({ profileId = OFFICIAL_MOUSE_PROFILE_ID, stageIds = [] } = {}) {
+      this._dpiWriteContext = {
+        profileId: clampU8(profileId),
+        stageIds: Array.isArray(stageIds) ? stageIds.map((v) => clampU8(v)) : [],
+      };
+    }
+
+    getDpiWriteContext() {
+      return {
+        profileId: clampU8(this._dpiWriteContext?.profileId ?? OFFICIAL_MOUSE_PROFILE_ID),
+        stageIds: Array.isArray(this._dpiWriteContext?.stageIds) ? this._dpiWriteContext.stageIds.slice(0) : [],
+      };
     }
 
     /**
@@ -1754,6 +1904,7 @@
           patch,
           prevState,
           nextState,
+          planner: this,
         });
         if (Array.isArray(seq) && seq.length) commands.push(...seq);
       }
@@ -2209,6 +2360,266 @@
   const RAZER_BUTTON_MAPPING_DISABLED_REASON =
     "Razer button-mapping protocol is temporarily disabled until the official packet model is fully verified";
 
+  const OFFICIAL_OBM_MOUSE_ASSIGNMENT_BY_PUBLIC_ACTION = Object.freeze({
+    "1:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.LEFT_BUTTON] },
+    "2:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.RIGHT_BUTTON] },
+    "4:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.SCROLL_BUTTON] },
+    "8:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.BUTTON_5] },
+    "16:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.BUTTON_4] },
+    "1:6": { functionId: OFFICIAL_OBM_FUNCTION_ID.DOUBLE_CLICK, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.LEFT_BUTTON] },
+    "1:9": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.SCROLL_UP] },
+    "1:10": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.SCROLL_DOWN] },
+    "7:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.OFF, dataSize: 0, dataArray: [] },
+    "32:5": { functionId: OFFICIAL_OBM_FUNCTION_ID.DPI, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.DPI_CYCLE_UP] },
+  });
+
+  const OFFICIAL_OBM_MEDIA_USAGE_BY_PUBLIC_ACTION = Object.freeze({
+    "64:0": OFFICIAL_MEDIA_USAGE.VOLUME_UP,
+    "64:1": OFFICIAL_MEDIA_USAGE.VOLUME_DOWN,
+    "64:2": OFFICIAL_MEDIA_USAGE.MUTE_VOLUME,
+    "64:4": OFFICIAL_MEDIA_USAGE.MEDIA_PLAY_OR_PAUSE,
+    "64:5": OFFICIAL_MEDIA_USAGE.NEXT_TRACK,
+    "64:6": OFFICIAL_MEDIA_USAGE.PREVIOUS_TRACK,
+    "64:12": OFFICIAL_MEDIA_USAGE.MEDIA_STOP,
+  });
+
+  const OFFICIAL_PUBLIC_ACTION_BY_MEDIA_USAGE = new Map([
+    [OFFICIAL_MEDIA_USAGE.VOLUME_UP, { funckey: 0x40, keycode: 0x0000 }],
+    [OFFICIAL_MEDIA_USAGE.VOLUME_DOWN, { funckey: 0x40, keycode: 0x0001 }],
+    [OFFICIAL_MEDIA_USAGE.MUTE_VOLUME, { funckey: 0x40, keycode: 0x0002 }],
+    [OFFICIAL_MEDIA_USAGE.MEDIA_PLAY_OR_PAUSE, { funckey: 0x40, keycode: 0x0004 }],
+    [OFFICIAL_MEDIA_USAGE.NEXT_TRACK, { funckey: 0x40, keycode: 0x0005 }],
+    [OFFICIAL_MEDIA_USAGE.PREVIOUS_TRACK, { funckey: 0x40, keycode: 0x0006 }],
+    [OFFICIAL_MEDIA_USAGE.MEDIA_STOP, { funckey: 0x40, keycode: 0x000c }],
+  ]);
+
+  const OFFICIAL_MODIFIER_BITS_BY_LEGACY_USAGE = Object.freeze({
+    0xe0: OFFICIAL_MODIFIER_BITS.LEFT_CTRL,
+    0xe1: OFFICIAL_MODIFIER_BITS.LEFT_SHIFT,
+    0xe2: OFFICIAL_MODIFIER_BITS.LEFT_ALT,
+    0xe3: OFFICIAL_MODIFIER_BITS.LEFT_GUI,
+    0xe4: OFFICIAL_MODIFIER_BITS.RIGHT_CTRL,
+    0xe5: OFFICIAL_MODIFIER_BITS.RIGHT_SHIFT,
+    0xe6: OFFICIAL_MODIFIER_BITS.RIGHT_ALT,
+    0xe7: OFFICIAL_MODIFIER_BITS.RIGHT_GUI,
+  });
+
+  const OFFICIAL_LEGACY_USAGE_BY_MODIFIER_BITS = Object.freeze(
+    Object.fromEntries(
+      Object.entries(OFFICIAL_MODIFIER_BITS_BY_LEGACY_USAGE).map(([usage, bits]) => [bits, Number(usage)])
+    )
+  );
+
+  function hexByteList(dataArray, size = dataArray?.length ?? 0) {
+    const list = [];
+    const src = dataArray instanceof Uint8Array ? dataArray : new Uint8Array(dataArray || []);
+    const count = clampInt(size, 0, src.length);
+    for (let i = 0; i < count; i++) list.push(hexU8(src[i]));
+    return list.join("-");
+  }
+
+  function buildUnknownOfficialObmEntry(functionId = 0x00, dataArray = null, dataSize = 0) {
+    const src = dataArray instanceof Uint8Array ? dataArray : new Uint8Array(dataArray || []);
+    return {
+      source: `鏈煡(瀹樻柟OBM:fn=${hexU8(functionId)} data=${hexByteList(src, dataSize)})`,
+      funckey: 0x00,
+      keycode: 0x0000,
+    };
+  }
+
+  function buildOfficialObmDataArray(input = null) {
+    const src = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+    const out = new Uint8Array(5);
+    out.set(src.subarray(0, 5), 0);
+    return out;
+  }
+
+  function splitLegacyKeyboardActionKeycode(keycode) {
+    const packed = clampInt(keycode, 0, 0xffff);
+    let modifierBits = (packed >> 8) & 0xff;
+    let hidUsage = packed & 0xff;
+    if (!modifierBits && Object.prototype.hasOwnProperty.call(OFFICIAL_MODIFIER_BITS_BY_LEGACY_USAGE, hidUsage)) {
+      modifierBits = OFFICIAL_MODIFIER_BITS_BY_LEGACY_USAGE[hidUsage];
+      hidUsage = 0x00;
+    }
+    return { modifierBits, hidUsage };
+  }
+
+  function buildLegacyKeyboardActionKeycode(modifierBits = 0x00, hidUsage = 0x00) {
+    const bits = clampU8(modifierBits);
+    const hid = clampU8(hidUsage);
+    if (!hid && Object.prototype.hasOwnProperty.call(OFFICIAL_LEGACY_USAGE_BY_MODIFIER_BITS, bits)) {
+      return clampInt(OFFICIAL_LEGACY_USAGE_BY_MODIFIER_BITS[bits], 0, 0xffff);
+    }
+    return ((bits << 8) | hid) & 0xffff;
+  }
+
+  function buildOfficialObmAssignmentFromPublicAction(actionLike) {
+    const action = normalizeButtonMappingEntry(actionLike);
+    const actionKey = `${action.funckey}:${action.keycode}`;
+
+    if (Object.prototype.hasOwnProperty.call(OFFICIAL_OBM_MOUSE_ASSIGNMENT_BY_PUBLIC_ACTION, actionKey)) {
+      const hit = OFFICIAL_OBM_MOUSE_ASSIGNMENT_BY_PUBLIC_ACTION[actionKey];
+      return {
+        functionId: clampU8(hit.functionId),
+        dataSize: clampInt(hit.dataSize, 0, 5),
+        dataArray: buildOfficialObmDataArray(hit.dataArray),
+      };
+    }
+
+    if (action.funckey === 0x02) {
+      const { modifierBits, hidUsage } = splitLegacyKeyboardActionKeycode(action.keycode);
+      return {
+        functionId: OFFICIAL_OBM_FUNCTION_ID.KEY_CODE,
+        dataSize: 2,
+        dataArray: buildOfficialObmDataArray([modifierBits, hidUsage]),
+      };
+    }
+
+    if (Object.prototype.hasOwnProperty.call(OFFICIAL_OBM_MEDIA_USAGE_BY_PUBLIC_ACTION, actionKey)) {
+      const usage = clampU16(OFFICIAL_OBM_MEDIA_USAGE_BY_PUBLIC_ACTION[actionKey]);
+      return {
+        functionId: OFFICIAL_OBM_FUNCTION_ID.MEDIA_KEYS,
+        dataSize: 2,
+        dataArray: buildOfficialObmDataArray([usage & 0xff, (usage >> 8) & 0xff]),
+      };
+    }
+
+    return null;
+  }
+
+  function parseOfficialObmAssignment(response, mode = OFFICIAL_BUTTON_MODE.NORMAL) {
+    const args = response?.arguments instanceof Uint8Array ? response.arguments : new Uint8Array();
+    const isHyperShift = clampU8(mode) === OFFICIAL_BUTTON_MODE.HYPERSHIFT;
+    const functionOffset = isHyperShift ? 3 : 2;
+    const sizeOffset = isHyperShift ? 5 : 4;
+    const dataOffsets = isHyperShift ? [7, 9, 11, 13, 15] : [6, 8, 10, 12, 14];
+    const dataArray = new Uint8Array(5);
+    for (let i = 0; i < dataOffsets.length; i++) {
+      dataArray[i] = clampU8(args[dataOffsets[i]] ?? 0x00);
+    }
+    return {
+      profileId: clampU8(args[0] ?? OFFICIAL_MOUSE_PROFILE_ID),
+      buttonId: clampU8(args[1] ?? 0x00),
+      mode: isHyperShift ? OFFICIAL_BUTTON_MODE.HYPERSHIFT : OFFICIAL_BUTTON_MODE.NORMAL,
+      functionId: clampU8(args[functionOffset] ?? 0x00),
+      dataSize: clampInt(args[sizeOffset] ?? 0x00, 0, 5),
+      dataArray,
+    };
+  }
+
+  function buildPublicActionFromOfficialObmAssignment(assignment) {
+    const fnId = clampU8(assignment?.functionId ?? 0x00);
+    const dataSize = clampInt(assignment?.dataSize ?? 0x00, 0, 5);
+    const dataArray = buildOfficialObmDataArray(assignment?.dataArray);
+
+    if (fnId === OFFICIAL_OBM_FUNCTION_ID.OFF) {
+      return normalizeButtonMappingEntry({
+        source: FUNCKEY_KEYCODE_TO_LABEL.get("7:0") || "绂佹鎸夐敭",
+        funckey: 0x07,
+        keycode: 0x0000,
+      });
+    }
+
+    if (fnId === OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE) {
+      const target = clampU8(dataArray[0] ?? 0x00);
+      let publicKey = "";
+      switch (target) {
+        case OFFICIAL_OBM_BUTTON_TARGET.LEFT_BUTTON: publicKey = "1:0"; break;
+        case OFFICIAL_OBM_BUTTON_TARGET.RIGHT_BUTTON: publicKey = "2:0"; break;
+        case OFFICIAL_OBM_BUTTON_TARGET.SCROLL_BUTTON: publicKey = "4:0"; break;
+        case OFFICIAL_OBM_BUTTON_TARGET.BUTTON_5: publicKey = "8:0"; break;
+        case OFFICIAL_OBM_BUTTON_TARGET.BUTTON_4: publicKey = "16:0"; break;
+        case OFFICIAL_OBM_BUTTON_TARGET.SCROLL_UP: publicKey = "1:9"; break;
+        case OFFICIAL_OBM_BUTTON_TARGET.SCROLL_DOWN: publicKey = "1:10"; break;
+        case OFFICIAL_OBM_BUTTON_TARGET.DPI_CYCLE_UP: publicKey = "32:5"; break;
+        default: break;
+      }
+      if (publicKey) {
+        const [funckey, keycode] = publicKey.split(":").map((v) => Number(v));
+        const source = FUNCKEY_KEYCODE_TO_LABEL.get(publicKey);
+        if (source) return normalizeButtonMappingEntry({ source, funckey, keycode });
+      }
+      return buildUnknownOfficialObmEntry(fnId, dataArray, dataSize);
+    }
+
+    if (fnId === OFFICIAL_OBM_FUNCTION_ID.DOUBLE_CLICK) {
+      if (clampU8(dataArray[0] ?? 0x00) === OFFICIAL_OBM_BUTTON_TARGET.LEFT_BUTTON) {
+        const source = FUNCKEY_KEYCODE_TO_LABEL.get("1:6");
+        if (source) return normalizeButtonMappingEntry({ source, funckey: 0x01, keycode: 0x0006 });
+      }
+      return buildUnknownOfficialObmEntry(fnId, dataArray, dataSize);
+    }
+
+    if (fnId === OFFICIAL_OBM_FUNCTION_ID.DPI) {
+      if (clampU8(dataArray[0] ?? 0x00) === OFFICIAL_OBM_BUTTON_TARGET.DPI_CYCLE_UP) {
+        const source = FUNCKEY_KEYCODE_TO_LABEL.get("32:5");
+        if (source) return normalizeButtonMappingEntry({ source, funckey: 0x20, keycode: 0x0005 });
+      }
+      return buildUnknownOfficialObmEntry(fnId, dataArray, dataSize);
+    }
+
+    if (fnId === OFFICIAL_OBM_FUNCTION_ID.KEY_CODE) {
+      const keycode = buildLegacyKeyboardActionKeycode(dataArray[0], dataArray[1]);
+      const source = FUNCKEY_KEYCODE_TO_LABEL.get(`2:${keycode}`);
+      if (source) return normalizeButtonMappingEntry({ source, funckey: 0x02, keycode });
+      return buildUnknownOfficialObmEntry(fnId, dataArray, dataSize);
+    }
+
+    if (fnId === OFFICIAL_OBM_FUNCTION_ID.MEDIA_KEYS) {
+      const usage = ((clampU8(dataArray[1] ?? 0x00) << 8) | clampU8(dataArray[0] ?? 0x00)) & 0xffff;
+      const action = OFFICIAL_PUBLIC_ACTION_BY_MEDIA_USAGE.get(usage);
+      if (action) {
+        const source = FUNCKEY_KEYCODE_TO_LABEL.get(`${action.funckey}:${action.keycode}`);
+        if (source) return normalizeButtonMappingEntry({ source, funckey: action.funckey, keycode: action.keycode });
+      }
+      return buildUnknownOfficialObmEntry(fnId, dataArray, dataSize);
+    }
+
+    return buildUnknownOfficialObmEntry(fnId, dataArray, dataSize);
+  }
+
+  function resolveButtonMappingActionInput(btnId, labelOrObj) {
+    const slot = clampInt(btnId, 1, 6);
+
+    if (typeof labelOrObj === "string") {
+      return resolveActionFromLabel(slot, labelOrObj);
+    }
+
+    if (!isObject(labelOrObj)) return null;
+
+    const explicitLabel = normalizeActionLabel(labelOrObj.label ?? labelOrObj.source ?? "");
+    if (explicitLabel) {
+      const byLabel = resolveActionFromLabel(slot, explicitLabel);
+      if (byLabel) return byLabel;
+    }
+
+    const normalized = normalizeButtonMappingEntry(labelOrObj);
+    const source = FUNCKEY_KEYCODE_TO_LABEL.get(`${normalized.funckey}:${normalized.keycode}`) || normalized.source;
+    if (!source) return null;
+
+    return {
+      label: source,
+      source,
+      action: {
+        funckey: normalized.funckey,
+        keycode: normalized.keycode,
+      },
+    };
+  }
+
+  const OFFICIAL_OBM_WRITABLE_LABELS = Object.freeze(
+    (() => {
+      const labels = new Set();
+      for (const [label, action] of Object.entries(KEYMAP_ACTIONS)) {
+        if (buildOfficialObmAssignmentFromPublicAction(action)) {
+          labels.add(label);
+        }
+      }
+      return labels;
+    })()
+  );
+
   function resolveActionFromLabel(btnId, label) {
     const b = clampInt(btnId, 1, 6);
     const canonical = normalizeActionLabel(label);
@@ -2271,6 +2682,7 @@
       this._onRawReportCbs = new Set();
       this._boundInputReport = (event) => this._handleInputReport(event);
       this._closed = true;
+      this._sessionReadCache = this._makeSessionReadCache();
 
       if (device) this.device = device;
       this._cfg = this._makeDefaultCfg();
@@ -2301,6 +2713,56 @@
       return normalizePid(controlDevice);
     }
 
+    _makeSessionReadCache() {
+      return {
+        smartTrackingAsymmetric: false,
+        dpiProfileId: OFFICIAL_MOUSE_PROFILE_ID,
+        dpiStageIds: [],
+      };
+    }
+
+    _resetSessionReadCache() {
+      this._sessionReadCache = this._makeSessionReadCache();
+      return this._sessionReadCache;
+    }
+
+    _resolveSnapshotReadMode(mode = "full", reason = "") {
+      const normalizedMode = String(mode || "full").trim().toLowerCase();
+      if (normalizedMode === "none") return "none";
+      if (
+        normalizedMode === SNAPSHOT_READ_MODE.CONNECT_FULL
+        || normalizedMode === SNAPSHOT_READ_MODE.REFRESH_FULL
+      ) {
+        return normalizedMode;
+      }
+      return String(reason || "").trim().toLowerCase() === "connect"
+        ? SNAPSHOT_READ_MODE.CONNECT_FULL
+        : SNAPSHOT_READ_MODE.REFRESH_FULL;
+    }
+
+    _hasStaticSnapshotValue(key) {
+      return String(this._cfg?.[key] || "").trim().length > 0;
+    }
+
+    _hasSmartTrackingAsymmetricCache() {
+      return !!this._sessionReadCache?.smartTrackingAsymmetric;
+    }
+
+    _markSmartTrackingAsymmetricCacheValid(valid = true) {
+      if (!this._sessionReadCache) this._resetSessionReadCache();
+      this._sessionReadCache.smartTrackingAsymmetric = !!valid;
+    }
+
+    _updateDpiWriteContext(profileId = OFFICIAL_MOUSE_PROFILE_ID, stageIds = []) {
+      if (!this._sessionReadCache) this._resetSessionReadCache();
+      this._sessionReadCache.dpiProfileId = clampU8(profileId);
+      this._sessionReadCache.dpiStageIds = Array.isArray(stageIds) ? stageIds.map((v) => clampU8(v)) : [];
+      this._planner.setDpiWriteContext({
+        profileId: this._sessionReadCache.dpiProfileId,
+        stageIds: this._sessionReadCache.dpiStageIds,
+      });
+    }
+
     _setSessionDevices(controlDevice, eventDevice) {
       this._detachInputReportListener();
       this._device = controlDevice || null;
@@ -2309,6 +2771,7 @@
       this._sessionPid = this._resolveSessionPid(this._device);
       this._planner.setProductId(this._sessionPid);
       this._driver.setDevice(this._device, this._transportPid);
+      this._resetSessionReadCache();
       this._cfg = this._makeDefaultCfg();
       this._syncCapabilitiesSnapshot();
     }
@@ -2590,12 +3053,17 @@
       const options = isObject(opts) ? opts : {};
       const hasDevice = Object.prototype.hasOwnProperty.call(options, "device");
       const hasEventDevice = Object.prototype.hasOwnProperty.call(options, "eventDevice");
+      const hasOpenRetry = Object.prototype.hasOwnProperty.call(options, "openRetry");
+      const hasReadRetry = Object.prototype.hasOwnProperty.call(options, "readRetry");
+      const hasOpenRetryDelayMs = Object.prototype.hasOwnProperty.call(options, "openRetryDelayMs");
+      const hasReadRetryDelayMs = Object.prototype.hasOwnProperty.call(options, "readRetryDelayMs");
+      const normalizedReason = String(options.reason || "").trim().toLowerCase();
       const {
         reason = "",
-        openRetry = 2,
+        openRetry = (normalizedReason === "connect" ? 1 : 2),
         readRetry = 2,
         openRetryDelayMs = 120,
-        readRetryDelayMs = 120,
+        readRetryDelayMs = (normalizedReason === "connect" ? 40 : 120),
         readTimeoutMs = 2000,
         sendTimeoutMs = null,
         useCacheFallback = true,
@@ -2609,12 +3077,16 @@
       }
 
       const cachedCfg = this.getCachedConfig();
-      const maxOpenAttempts = clampInt(openRetry, 1, 10);
-      const maxReadAttempts = clampInt(readRetry, 1, 10);
-      const openDelayMs = clampInt(openRetryDelayMs, 0, 5000);
-      const readDelayMs = clampInt(readRetryDelayMs, 0, 5000);
+      const requestedOpenRetry = hasOpenRetry ? options.openRetry : openRetry;
+      const requestedReadRetry = hasReadRetry ? options.readRetry : readRetry;
+      const requestedOpenRetryDelayMs = hasOpenRetryDelayMs ? options.openRetryDelayMs : openRetryDelayMs;
+      const requestedReadRetryDelayMs = hasReadRetryDelayMs ? options.readRetryDelayMs : readRetryDelayMs;
       const normalizedInitialReadMode = String(initialReadMode || "full").trim().toLowerCase();
-      const normalizedReason = String(reason || "").trim().toLowerCase();
+      const snapshotReadMode = this._resolveSnapshotReadMode(normalizedInitialReadMode, normalizedReason);
+      const maxOpenAttempts = clampInt(requestedOpenRetry, 1, 10);
+      const maxReadAttempts = clampInt(requestedReadRetry, 1, 10);
+      const openDelayMs = clampInt(requestedOpenRetryDelayMs, 0, 5000);
+      const readDelayMs = clampInt(requestedReadRetryDelayMs, 0, 5000);
       const driverReadTimeoutMs = clampInt(readTimeoutMs, 250, 10_000);
       const driverSendTimeoutMs = clampInt(
         sendTimeoutMs == null ? Math.max(driverReadTimeoutMs, 1500) : sendTimeoutMs,
@@ -2633,8 +3105,8 @@
         openAttempts = i + 1;
         try {
           await this.open({
-            openEventDevice: normalizedInitialReadMode === "none",
-            tolerateEventDeviceOpenFailure: normalizedInitialReadMode === "none",
+            openEventDevice: snapshotReadMode === "none",
+            tolerateEventDeviceOpenFailure: snapshotReadMode === "none",
           });
           openErr = null;
           break;
@@ -2645,11 +3117,12 @@
       }
 
       let initialReadErr = null;
-      if (!openErr && normalizedInitialReadMode !== "none") {
+      if (!openErr && snapshotReadMode !== "none") {
         for (let i = 0; i < maxReadAttempts; i++) {
           readAttempts = i + 1;
           try {
             const updates = await this._readDeviceStateSnapshot({
+              mode: snapshotReadMode,
               strictButtonMappingRead: !useConnectButtonMappingRead,
               connectButtonMappingRead: useConnectButtonMappingRead,
             });
@@ -2666,7 +3139,7 @@
         }
       }
 
-      if (!openErr && normalizedInitialReadMode !== "none" && this.eventDevice && this.eventDevice !== this.device) {
+      if (!openErr && snapshotReadMode !== "none" && this.eventDevice && this.eventDevice !== this.device) {
         try {
           await this.open({
             openEventDevice: true,
@@ -2766,7 +3239,10 @@
     async requestConfig() {
       return this._opQueue.enqueue(async () => {
         await this._ensureOpen();
-        const updates = await this._readDeviceStateSnapshot({ strictButtonMappingRead: false });
+        const updates = await this._readDeviceStateSnapshot({
+          mode: SNAPSHOT_READ_MODE.REFRESH_FULL,
+          strictButtonMappingRead: false,
+        });
         if (updates && Object.keys(updates).length) {
           this._cfg = Object.assign({}, this._cfg, updates);
         }
@@ -2834,7 +3310,10 @@
             // On write failure, run a protocol-level readback reconciliation once
             // so the UI cache realigns with the device's actual state.
             try {
-              const updates = await this._readDeviceStateSnapshot({ strictButtonMappingRead: false });
+              const updates = await this._readDeviceStateSnapshot({
+                mode: SNAPSHOT_READ_MODE.REFRESH_FULL,
+                strictButtonMappingRead: false,
+              });
               if (updates && Object.keys(updates).length) {
                 this._cfg = Object.assign({}, this._cfg, updates);
               }
@@ -2850,6 +3329,17 @@
             }
             throw err;
           }
+        }
+
+        if (
+          Object.prototype.hasOwnProperty.call(patch, "smartTrackingMode")
+          || Object.prototype.hasOwnProperty.call(patch, "smartTrackingLevel")
+          || Object.prototype.hasOwnProperty.call(patch, "smartTrackingLiftDistance")
+          || Object.prototype.hasOwnProperty.call(patch, "smartTrackingLandingDistance")
+        ) {
+          this._markSmartTrackingAsymmetricCacheValid(
+            TRANSFORMERS.normalizeSmartTrackingMode(nextState.smartTrackingMode) === "asymmetric"
+          );
         }
 
         this._cfg = Object.assign({}, this._cfg, nextState);
@@ -2927,12 +3417,78 @@
     async setButtonMappingBySelect(btnId, labelOrObj) {
       return this._opQueue.enqueue(async () => {
         await this._ensureOpen();
-        void btnId;
-        void labelOrObj;
-        throw new ProtocolError(RAZER_BUTTON_MAPPING_DISABLED_REASON, "FEATURE_UNAVAILABLE", {
-          feature: "buttonMappings",
-          reason: "official_packet_model_not_verified",
-        });
+        const pid = this._pid();
+        if (!supportsOfficialObmForPid(pid)) {
+          throw new ProtocolError("Button mapping is not available for this Razer model", "FEATURE_UNAVAILABLE", {
+            pid,
+            btnId,
+          });
+        }
+        const slot = clampInt(btnId, 1, 6);
+        const buttonId = OFFICIAL_OBM_SLOT_TO_BUTTON_ID[slot];
+        if (!buttonId) {
+          throw new ProtocolError(`Unsupported Razer button slot: ${btnId}`, "BAD_PARAM", { btnId });
+        }
+
+        const resolved = resolveButtonMappingActionInput(slot, labelOrObj);
+        if (!resolved?.action) {
+          throw new ProtocolError(`Unknown or unsupported button action: ${String(labelOrObj ?? "")}`, "BAD_PARAM", {
+            btnId: slot,
+            value: labelOrObj,
+          });
+        }
+
+        const assignment = buildOfficialObmAssignmentFromPublicAction(resolved.action);
+        if (!assignment) {
+          throw new ProtocolError(`Button action is not writable via official OBM: ${String(resolved.label || resolved.source || "")}`, "FEATURE_UNAVAILABLE", {
+            btnId: slot,
+            label: resolved.label || resolved.source || "",
+          });
+        }
+
+        const tx = txForField(this._pid(), "buttonMappings");
+        await this._driver.runSequence([{
+          packet: ProtocolCodec.commands.setSingleButtonAssignment(
+            tx,
+            OFFICIAL_MOUSE_PROFILE_ID,
+            buttonId,
+            OFFICIAL_BUTTON_MODE.NORMAL,
+            assignment.functionId,
+            assignment.dataSize,
+            assignment.dataArray
+          ),
+        }]);
+
+        const verifyRes = await this._safeQuery(
+          ProtocolCodec.commands.getSingleButtonAssignment(tx, OFFICIAL_MOUSE_PROFILE_ID, buttonId)
+        );
+        if (!verifyRes?.arguments) {
+          throw new ProtocolError("Button mapping verify read failed", "VERIFY_FAILED", {
+            btnId: slot,
+            buttonId,
+          });
+        }
+
+        const verified = buildPublicActionFromOfficialObmAssignment(
+          parseOfficialObmAssignment(verifyRes, OFFICIAL_BUTTON_MODE.NORMAL)
+        );
+        if (!isSameButtonAction(verified, resolved.action)) {
+          throw new ProtocolError("Button mapping verify mismatch", "VERIFY_FAILED", {
+            btnId: slot,
+            expected: normalizeButtonMappingEntry(resolved.action, resolved.source || resolved.label || ""),
+            actual: verified,
+          });
+        }
+
+        const nextMappings = Array.isArray(this._cfg?.buttonMappings)
+          ? this._cfg.buttonMappings.slice(0, 6)
+          : buildDefaultRazerButtonMappings();
+        while (nextMappings.length < 6) {
+          nextMappings.push(buildDefaultRazerButtonMappings()[nextMappings.length] || buildUnknownOfficialObmEntry());
+        }
+        nextMappings[slot - 1] = verified;
+        this._cfg = Object.assign({}, this._cfg, { buttonMappings: nextMappings });
+        this._emitConfig();
       });
     }
 
@@ -2959,19 +3515,48 @@
       void strictStability;
       void connectFastPath;
       this._ensureSupported();
-
+      const pid = this._pid();
       const cached = Array.isArray(this._cfg?.buttonMappings) && this._cfg.buttonMappings.length
         ? this._cfg.buttonMappings
         : buildDefaultRazerButtonMappings();
-
+      if (!supportsOfficialObmForPid(pid)) {
+        return Array.from({ length: 6 }, (_, index) => normalizeButtonMappingEntry(
+          cached[index],
+          DEFAULT_RAZER_BUTTON_SOURCE_BY_BUTTON[index + 1]
+        ));
+      }
+      const tx = txForField(pid, "buttonMappings");
       const out = [];
-      for (let i = 0; i < 6; i++) {
-        out.push(
-          normalizeButtonMappingEntry(
-            cached[i],
-            DEFAULT_RAZER_BUTTON_SOURCE_BY_BUTTON[i + 1]
-          )
+
+      for (let slot = 1; slot <= 6; slot++) {
+        const fallback = normalizeButtonMappingEntry(
+          cached[slot - 1],
+          DEFAULT_RAZER_BUTTON_SOURCE_BY_BUTTON[slot]
         );
+        const buttonId = OFFICIAL_OBM_SLOT_TO_BUTTON_ID[slot];
+        if (!buttonId) {
+          out.push(fallback);
+          continue;
+        }
+
+        try {
+          const res = await this._safeQuery(
+            ProtocolCodec.commands.getSingleButtonAssignment(tx, OFFICIAL_MOUSE_PROFILE_ID, buttonId),
+            null
+          );
+          if (!res?.arguments) {
+            out.push(fallback);
+            continue;
+          }
+          out.push(
+            buildPublicActionFromOfficialObmAssignment(
+              parseOfficialObmAssignment(res, OFFICIAL_BUTTON_MODE.NORMAL)
+            )
+          );
+        } catch (err) {
+          console.warn("[Razer] OBM button read failed", { slot, buttonId, err });
+          out.push(fallback);
+        }
       }
 
       return out;
@@ -3027,24 +3612,30 @@
       return out;
     }
 
-    // Read full runtime snapshot used by open()/requestConfig().
-    async _readDeviceStateSnapshot({ strictButtonMappingRead = false, connectButtonMappingRead = false } = {}) {
+    // Read the serialized runtime snapshot used by connect bootstrap and later refreshes.
+    async _readDeviceStateSnapshot({ mode = SNAPSHOT_READ_MODE.REFRESH_FULL, strictButtonMappingRead = false, connectButtonMappingRead = false } = {}) {
       const pid = this._ensureSupported();
       const caps = this._caps();
       const tx = txForField(pid, "snapshot");
+      const snapshotMode = this._resolveSnapshotReadMode(mode);
+      const isConnectFull = snapshotMode === SNAPSHOT_READ_MODE.CONNECT_FULL;
       const updates = {
         deviceName: PID_NAME[pid] || (this.device?.productName ? String(this.device.productName) : "Razer Mouse"),
         capabilities: this._capabilitiesSnapshot(caps),
       };
 
-      const fw = await this._safeQuery(ProtocolCodec.commands.getFirmwareVersion(tx));
-      if (fw?.arguments) {
-        updates.firmwareVersion = `v${Number(fw.arguments[0] ?? 0)}.${Number(fw.arguments[1] ?? 0)}`;
+      if (isConnectFull || !this._hasStaticSnapshotValue("firmwareVersion")) {
+        const fw = await this._safeQuery(ProtocolCodec.commands.getFirmwareVersion(tx));
+        if (fw?.arguments) {
+          updates.firmwareVersion = `v${Number(fw.arguments[0] ?? 0)}.${Number(fw.arguments[1] ?? 0)}`;
+        }
       }
 
-      const serial = await this._safeQuery(ProtocolCodec.commands.getSerial(tx));
-      if (serial?.arguments) {
-        updates.serial = asciiFromBytes(serial.arguments.subarray(0, 22));
+      if (isConnectFull || !this._hasStaticSnapshotValue("serial")) {
+        const serial = await this._safeQuery(ProtocolCodec.commands.getSerial(tx));
+        if (serial?.arguments) {
+          updates.serial = asciiFromBytes(serial.arguments.subarray(0, 22));
+        }
       }
 
       if (caps.pollingMode === "v2") {
@@ -3059,19 +3650,32 @@
         }
       }
 
-      const dpi = await this._safeQuery(ProtocolCodec.commands.getDpiXY(tx, RAZER_CONST.NOSTORE));
-      if (dpi?.arguments) {
-        updates.dpi = {
-          x: ((dpi.arguments[1] << 8) | (dpi.arguments[2] & 0xff)) & 0xffff,
-          y: ((dpi.arguments[3] << 8) | (dpi.arguments[4] & 0xff)) & 0xffff,
-        };
-      }
-
-      const stages = await this._safeQuery(ProtocolCodec.commands.getDpiStages(tx, RAZER_CONST.VARSTORE));
+      const stages = await this._safeQuery(ProtocolCodec.commands.getDpiStages(tx, OFFICIAL_MOUSE_PROFILE_ID));
       if (stages?.arguments) {
         const parsed = TRANSFORMERS.parseDpiStagesResponse(stages);
-        if (parsed.dpiStages?.length) updates.dpiStages = parsed.dpiStages;
-        updates.activeDpiStageIndex = parsed.activeDpiStageIndex;
+        if (parsed.dpiStages?.length) {
+          this._updateDpiWriteContext(parsed.classId ?? OFFICIAL_MOUSE_PROFILE_ID, parsed.stageIds ?? []);
+          const activeIndex = clampInt(parsed.activeDpiStageIndex ?? 0, 0, Math.max(0, parsed.dpiStages.length - 1));
+          const activeStage = parsed.dpiStages[activeIndex] || parsed.dpiStages[0] || null;
+          updates.dpiStages = parsed.dpiStages;
+          updates.activeDpiStageIndex = activeIndex;
+          if (activeStage) {
+            updates.dpi = {
+              x: activeStage.x,
+              y: activeStage.y,
+            };
+          }
+        }
+      }
+
+      if (!isObject(updates.dpi)) {
+        const dpi = await this._safeQuery(ProtocolCodec.commands.getDpiXY(tx, OFFICIAL_MOUSE_PROFILE_ID));
+        if (dpi?.arguments) {
+          updates.dpi = {
+            x: ((dpi.arguments[1] << 8) | (dpi.arguments[2] & 0xff)) & 0xffff,
+            y: ((dpi.arguments[3] << 8) | (dpi.arguments[4] & 0xff)) & 0xffff,
+          };
+        }
       }
 
       if (caps.battery) {
@@ -3089,11 +3693,11 @@
 
       if (caps.dynamicSensitivity) {
         const txDyn = txForField(pid, "dynamicSensitivity");
-        const dynEnabled = await this._safeQuery(ProtocolCodec.commands.getDynamicSensitivityEnabled(txDyn));
+        const dynEnabled = await this._safeQuery(ProtocolCodec.commands.getProximitySensorAccelerationState(txDyn));
         if (dynEnabled?.arguments) {
           updates.dynamicSensitivityEnabled = !!clampU8(dynEnabled.arguments[1] ?? 0);
         }
-        const dynMode = await this._safeQuery(ProtocolCodec.commands.getDynamicSensitivityMode(txDyn));
+        const dynMode = await this._safeQuery(ProtocolCodec.commands.getProximitySensorAccelerationMode(txDyn));
         if (dynMode?.arguments) {
           updates.dynamicSensitivityMode = TRANSFORMERS.normalizeDynamicSensitivityMode(dynMode.arguments[1] ?? 1);
         }
@@ -3111,28 +3715,45 @@
 
       if (caps.smartTracking) {
         const txTracking = txForField(pid, "smartTracking");
-        const modeRes = await this._safeQuery(ProtocolCodec.commands.getSmartTrackingMode(txTracking));
-        if (modeRes?.arguments) {
-          const modeSel = clampU8(modeRes.arguments[2] ?? 0x01);
-          updates.smartTrackingMode = modeSel === 0x04 ? "asymmetric" : "symmetric";
-          if (updates.smartTrackingMode === "symmetric") {
-            updates.smartTrackingLevel = TRANSFORMERS.normalizeSmartTrackingLevel(modeRes.arguments[3] ?? 0);
+        let smartTrackingMode = null;
+        const liftRes = await this._safeQuery(
+          ProtocolCodec.commands.getProximitySensorLiftSetting(
+            txTracking,
+            OFFICIAL_PROXIMITY_CLASS_ID,
+            OFFICIAL_PROXIMITY_SENSOR_ID
+          )
+        );
+        if (liftRes?.arguments) {
+          const modeSel = clampU8(liftRes.arguments[2] ?? 0x01);
+          smartTrackingMode = modeSel === 0x04 ? "asymmetric" : "symmetric";
+          updates.smartTrackingMode = smartTrackingMode;
+          if (smartTrackingMode === "symmetric") {
+            updates.smartTrackingLevel = TRANSFORMERS.normalizeSmartTrackingLevel(liftRes.arguments[3] ?? 0);
+            this._markSmartTrackingAsymmetricCacheValid(false);
           }
         }
 
-        // Keep asymmetric pair fresh regardless of current mode to avoid stale defaults
-        // after config refreshes that happen while device is in symmetric mode.
-        const distRes = await this._safeQuery(ProtocolCodec.commands.getSmartTrackingAsymmetricDistances(txTracking));
-        if (distRes?.arguments) {
-          // 0x0b/0x85 response layout from captures:
-          // args[0]=0x00, args[1]=0x04, args[2]=selector/fixed flag,
-          // args[3]=lift-1, args[4]=landing-1.
-          const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
-            clampU8(distRes.arguments[3] ?? 0) + 1,
-            clampU8(distRes.arguments[4] ?? 0) + 1
+        const shouldReadAsymmetricDistances = (
+          smartTrackingMode === "asymmetric"
+          || !this._hasSmartTrackingAsymmetricCache()
+        );
+        if (shouldReadAsymmetricDistances) {
+          const distRes = await this._safeQuery(
+            ProtocolCodec.commands.getProximitySensorConfiguration(
+              txTracking,
+              OFFICIAL_PROXIMITY_CLASS_ID,
+              OFFICIAL_PROXIMITY_SENSOR_ID
+            )
           );
-          updates.smartTrackingLiftDistance = dist.lift;
-          updates.smartTrackingLandingDistance = dist.landing;
+          if (distRes?.arguments) {
+            const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
+              clampU8(distRes.arguments[3] ?? 0) + 1,
+              clampU8(distRes.arguments[4] ?? 0) + 1
+            );
+            updates.smartTrackingLiftDistance = dist.lift;
+            updates.smartTrackingLandingDistance = dist.landing;
+            this._markSmartTrackingAsymmetricCacheValid(true);
+          }
         }
       }
 
@@ -3144,7 +3765,8 @@
         updates.buttonMappings = buttonMappings;
       }
 
-      // REP4 keymap readback uses strict decode; failed reads are surfaced as unknown placeholders.
+      // Button mapping snapshot now reads via official OBM on supported Viper PIDs only;
+      // other models stay on cached/default placeholders and do not touch device button I/O.
 
       return updates;
     }
@@ -3189,7 +3811,7 @@
   ProtocolApi.listKeyActionsByType = function listKeyActionsByType() {
     const buckets = Object.create(null);
     for (const [label, action] of Object.entries(KEYMAP_ACTIONS)) {
-      if (!REP4_WRITABLE_LABELS.has(label)) continue;
+      if (!OFFICIAL_OBM_WRITABLE_LABELS.has(label)) continue;
       const type = String(action?.type || "system");
       if (!buckets[type]) buckets[type] = [];
       buckets[type].push(label);
