@@ -104,6 +104,7 @@
     DEATHADDER_V3_PRO_WIRELESS_ALT: 0x00c3,
     DEATHADDER_V3_HYPERSPEED_WIRED: 0x00c4,
     DEATHADDER_V3_HYPERSPEED_WIRELESS: 0x00c5,
+    VIPER_V4_PRO_WIRELESS: 0x00e6,
   });
 
   const REPORT_STATUS = Object.freeze({
@@ -157,6 +158,7 @@
    * 0x00c3  00   legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless Alt)
    * 0x00c4  00   legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wired)
    * 0x00c5  00   legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wireless)
+   * 0x00e6  00   v2       Y        Y        Y        Y         Y      Viper V4 Pro (Wireless)
    */
   const PID_CAPABILITY_MATRIX = Object.freeze([
     buildPidMatrixRow(PID.HYPERPOLLING_WIRELESS_DONGLE, "Razer HyperPolling Wireless Dongle", {
@@ -181,6 +183,13 @@
     buildPidMatrixRow(PID.DEATHADDER_V3_PRO_WIRELESS_ALT, "Razer DeathAdder V3 Pro (Wireless Alt)"),
     buildPidMatrixRow(PID.DEATHADDER_V3_HYPERSPEED_WIRED, "Razer DeathAdder V3 HyperSpeed (Wired)"),
     buildPidMatrixRow(PID.DEATHADDER_V3_HYPERSPEED_WIRELESS, "Razer DeathAdder V3 HyperSpeed (Wireless)"),
+    buildPidMatrixRow(PID.VIPER_V4_PRO_WIRELESS, "Razer Viper V4 Pro (Wireless)", {
+      pollingMode: "v2",
+      hyperpollingIndicatorMode: true,
+      dynamicSensitivity: true,
+      sensorAngle: true,
+      hyperIndicatorTx: 0xff,
+    }),
   ]);
 
   const PID_CAPABILITY_MATRIX_BY_PID = Object.freeze(
@@ -2072,6 +2081,8 @@
   class MouseMouseHidApi {
     constructor({ device = null } = {}) {
       this._device = null;
+      this._eventDevice = null;
+      this._attachedInputDevice = null;
       this._driver = new UniversalHidDriver();
       this._planner = new CommandPlanner(0);
       this._opQueue = new SendQueue();
@@ -2087,10 +2098,21 @@
     }
 
     set device(dev) {
-      if (this._device && this._device !== dev && typeof this._device.removeEventListener === "function") {
-        this._device.removeEventListener("inputreport", this._boundInputReport);
-      }
-      this._device = dev || null;
+      this._setSessionDevices(dev || null, null);
+    }
+
+    get device() {
+      return this._device;
+    }
+
+    get eventDevice() {
+      return this._eventDevice;
+    }
+
+    _setSessionDevices(controlDevice, eventDevice) {
+      this._detachInputReportListener();
+      this._device = controlDevice || null;
+      this._eventDevice = eventDevice || null;
       const pid = normalizePid(this._device);
       this._planner.setProductId(pid);
       this._driver.setDevice(this._device, pid);
@@ -2098,8 +2120,26 @@
       this._syncCapabilitiesSnapshot();
     }
 
-    get device() {
-      return this._device;
+    _resolveInputDevice() {
+      return this._eventDevice || this._device || null;
+    }
+
+    matchesHidDevice(device) {
+      if (!device) return false;
+      return (
+        device === this._device
+        || device === this._eventDevice
+        || device === this._attachedInputDevice
+      );
+    }
+
+    async _closeDeviceHandle(device) {
+      if (!device) return;
+      try {
+        if (device.opened) await device.close();
+      } catch {
+        // ignore close errors
+      }
     }
 
     _pid() {
@@ -2119,9 +2159,16 @@
     async _ensureOpen() {
       if (!this.device) throw new ProtocolError("No HID device assigned", "NO_DEVICE");
       this._ensureSupported();
-      if (!this.device.opened) {
+      const needsOpen = (
+        !this.device.opened
+        || (this.eventDevice && this.eventDevice !== this.device && !this.eventDevice.opened)
+      );
+      if (needsOpen) {
         await this.open();
+        return;
       }
+      const inputDevice = this._resolveInputDevice();
+      if (inputDevice && this._attachedInputDevice !== inputDevice) this._attachInputReportListener();
     }
 
     _capabilitiesSnapshot(caps = this._caps()) {
@@ -2208,16 +2255,25 @@
     }
 
     _attachInputReportListener() {
-      if (!this.device || typeof this.device.addEventListener !== "function") return;
-      if (typeof this.device.removeEventListener === "function") {
-        this.device.removeEventListener("inputreport", this._boundInputReport);
+      const inputDevice = this._resolveInputDevice();
+      if (!inputDevice || typeof inputDevice.addEventListener !== "function") return;
+      if (this._attachedInputDevice && this._attachedInputDevice !== inputDevice) {
+        this._detachInputReportListener();
       }
-      this.device.addEventListener("inputreport", this._boundInputReport);
+      if (typeof inputDevice.removeEventListener === "function") {
+        inputDevice.removeEventListener("inputreport", this._boundInputReport);
+      }
+      inputDevice.addEventListener("inputreport", this._boundInputReport);
+      this._attachedInputDevice = inputDevice;
     }
 
     _detachInputReportListener() {
-      if (!this.device || typeof this.device.removeEventListener !== "function") return;
-      this.device.removeEventListener("inputreport", this._boundInputReport);
+      if (!this._attachedInputDevice || typeof this._attachedInputDevice.removeEventListener !== "function") {
+        this._attachedInputDevice = null;
+        return;
+      }
+      this._attachedInputDevice.removeEventListener("inputreport", this._boundInputReport);
+      this._attachedInputDevice = null;
     }
 
     _makeDefaultCfg() {
@@ -2274,16 +2330,33 @@
     async open() {
       if (!this.device) throw new ProtocolError("open() requires a HID device", "NO_DEVICE");
       const pid = this._ensureSupported();
+      const controlDevice = this.device;
+      const eventDevice = (this.eventDevice && this.eventDevice !== controlDevice) ? this.eventDevice : null;
+      let openedControl = false;
+      let openedEvent = false;
+      try {
+        if (!controlDevice.opened) {
+          await controlDevice.open();
+          openedControl = true;
+        }
 
-      if (!this.device.opened) {
-        await this.device.open();
+        if (eventDevice && !eventDevice.opened) {
+          await eventDevice.open();
+          openedEvent = true;
+        }
+
+        this._closed = false;
+        this._driver.setDevice(controlDevice, pid);
+        this._planner.setProductId(pid);
+        this._cfg = this._makeDefaultCfg();
+        this._attachInputReportListener();
+      } catch (err) {
+        this._closed = true;
+        this._detachInputReportListener();
+        if (openedEvent) await this._closeDeviceHandle(eventDevice);
+        if (openedControl) await this._closeDeviceHandle(controlDevice);
+        throw err;
       }
-
-      this._closed = false;
-      this._driver.setDevice(this.device, pid);
-      this._planner.setProductId(pid);
-      this._cfg = this._makeDefaultCfg();
-      this._attachInputReportListener();
 
       if (RAZER_POST_OPEN_SETTLE_MS > 0) {
         await sleep(RAZER_POST_OPEN_SETTLE_MS);
@@ -2313,8 +2386,9 @@
     // while guaranteeing at least one _emitConfig() call.
     async bootstrapSession(opts = {}) {
       const options = isObject(opts) ? opts : {};
+      const hasDevice = Object.prototype.hasOwnProperty.call(options, "device");
+      const hasEventDevice = Object.prototype.hasOwnProperty.call(options, "eventDevice");
       const {
-        device = null,
         reason = "",
         openRetry = 2,
         readRetry = 2,
@@ -2329,7 +2403,11 @@
       void readRetryDelayMs;
       void readTimeoutMs;
 
-      if (device) this.device = device;
+      if (hasDevice || hasEventDevice) {
+        const nextControlDevice = hasDevice ? (options.device || null) : this.device;
+        const nextEventDevice = hasEventDevice ? (options.eventDevice || null) : (hasDevice ? null : this.eventDevice);
+        this._setSessionDevices(nextControlDevice, nextEventDevice);
+      }
 
       const cachedCfg = this.getCachedConfig();
       const maxOpenAttempts = clampInt(openRetry, 1, 10);
@@ -2384,12 +2462,10 @@
     async close() {
       this._closed = true;
       this._detachInputReportListener();
-      if (!this.device) return;
-      try {
-        if (this.device.opened) await this.device.close();
-      } catch {
-        // ignore close errors
-      }
+      const controlDevice = this.device;
+      const eventDevice = (this.eventDevice && this.eventDevice !== controlDevice) ? this.eventDevice : null;
+      if (eventDevice) await this._closeDeviceHandle(eventDevice);
+      if (controlDevice) await this._closeDeviceHandle(controlDevice);
     }
 
     /**

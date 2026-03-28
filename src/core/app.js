@@ -8750,6 +8750,8 @@ function openDrawer(btn) {
       let dev = null;
       let candidates = [];
       let detectedType = null;
+      let connectionPlans = [];
+      let connectionPlanError = null;
 
       const pinPrimary = (mode === true);
 
@@ -8765,6 +8767,8 @@ function openDrawer(btn) {
         dev = res?.device || null;
         candidates = Array.isArray(res?.candidates) ? res.candidates : [];
         detectedType = res?.detectedType || null;
+        connectionPlans = Array.isArray(res?.connectionPlans) ? res.connectionPlans : [];
+        connectionPlanError = res?.connectionPlanError || null;
       } catch (e) {
         if (mode === true) {
           try { __reverseLandingToInitial(__landingClickOrigin); } catch (_) {}
@@ -8785,6 +8789,137 @@ function openDrawer(btn) {
         await __switchRuntimeDevice(detectedType);
       }
       if (!candidates.length) candidates = [dev];
+
+      const walkHidCollections = (collections, visit) => {
+        for (const collection of (Array.isArray(collections) ? collections : [])) {
+          visit(collection);
+          if (Array.isArray(collection?.children) && collection.children.length) {
+            walkHidCollections(collection.children, visit);
+          }
+        }
+      };
+
+      const countHidReports = (device, reportKey) => {
+        if (Array.isArray(device?.[reportKey]) && device[reportKey].length) {
+          return device[reportKey].length;
+        }
+        let count = 0;
+        walkHidCollections(device?.collections, (collection) => {
+          if (Array.isArray(collection?.[reportKey])) count += collection[reportKey].length;
+        });
+        return count;
+      };
+
+      const buildHidHandleSummary = (device) => {
+        const collections = Array.isArray(device?.collections) ? device.collections : [];
+        const firstCollection = collections[0] || null;
+        const featureReportCount = countHidReports(device, "featureReports");
+        const inputReportCount = countHidReports(device, "inputReports");
+        return {
+          collectionCount: collections.length,
+          usagePage: Number(firstCollection?.usagePage ?? NaN),
+          usage: Number(firstCollection?.usage ?? NaN),
+          featureReportCount,
+          inputReportCount,
+          hasFeatureReports: featureReportCount > 0,
+          hasInputReports: inputReportCount > 0,
+        };
+      };
+
+      const normalizeConnectionPlan = (plan) => {
+        const controlDevice = plan?.controlDevice || plan?.device || null;
+        const eventDevice = plan?.eventDevice || controlDevice || null;
+        if (!controlDevice) return null;
+        const controlSummary = plan?.controlSummary || buildHidHandleSummary(controlDevice);
+        const eventSummary = plan?.eventSummary || (eventDevice === controlDevice ? controlSummary : buildHidHandleSummary(eventDevice));
+        const eventMode = (
+          plan?.eventMode === "separate"
+          && eventDevice
+          && eventDevice !== controlDevice
+        ) ? "separate" : "shared";
+        return {
+          controlDevice,
+          eventDevice,
+          eventMode,
+          debugLabel: String(plan?.debugLabel || ""),
+          controlSummary,
+          eventSummary,
+        };
+      };
+
+      const buildDefaultConnectionPlan = (device) => {
+        if (!device) return null;
+        return normalizeConnectionPlan({
+          controlDevice: device,
+          eventDevice: device,
+          eventMode: "shared",
+        });
+      };
+
+      const normalizeConnectionPlans = (plans) => (
+        Array.isArray(plans)
+          ? plans.map(normalizeConnectionPlan).filter(Boolean)
+          : []
+      );
+
+      const getPlanDevices = (plan) => {
+        const out = [];
+        const push = (device) => {
+          if (!device) return;
+          if (out.includes(device)) return;
+          out.push(device);
+        };
+        push(plan?.controlDevice || null);
+        push(plan?.eventDevice || plan?.controlDevice || null);
+        return out;
+      };
+
+      const formatSummaryHex = (value) => (
+        Number.isFinite(value)
+          ? `0x${Math.trunc(value).toString(16)}`
+          : "n/a"
+      );
+
+      const describeHandleSummary = (summary) => {
+        const item = summary || {};
+        return [
+          `collections=${Number(item.collectionCount ?? 0)}`,
+          `usagePage=${formatSummaryHex(item.usagePage)}`,
+          `usage=${formatSummaryHex(item.usage)}`,
+          `feature=${item.hasFeatureReports ? "yes" : "no"}(${Number(item.featureReportCount ?? 0)})`,
+          `input=${item.hasInputReports ? "yes" : "no"}(${Number(item.inputReportCount ?? 0)})`,
+        ].join(" ");
+      };
+
+      const describeConnectionPlan = (plan) => {
+        const normalized = normalizeConnectionPlan(plan);
+        if (!normalized) return "invalid-plan";
+        const eventText = normalized.eventMode === "shared"
+          ? "event=shared"
+          : `event=separate { ${describeHandleSummary(normalized.eventSummary)} }`;
+        return `control={ ${describeHandleSummary(normalized.controlSummary)} } ${eventText}`;
+      };
+
+      const toConnectionPlanError = (planError) => {
+        const baseMessage = planError?.message || "Failed to resolve HID connection plan";
+        const err = new Error(
+          planError?.code
+            ? `${planError.code}: ${baseMessage}`
+            : baseMessage
+        );
+        if (planError?.code) err.code = planError.code;
+        err.connectionPlanError = planError || null;
+        return err;
+      };
+
+      const handshakePlans = connectionPlans.length
+        ? normalizeConnectionPlans(connectionPlans)
+        : (!connectionPlanError ? candidates.map(buildDefaultConnectionPlan).filter(Boolean) : []);
+
+      if (!handshakePlans.length && connectionPlanError) {
+        console.warn("[HID] Connection plan resolution failed:", connectionPlanError);
+        throw toConnectionPlanError(connectionPlanError);
+      }
 
       hidConnecting = true;
       hidLinked = false;
@@ -8836,90 +8971,116 @@ function openDrawer(btn) {
        * Unified handshake entry.
        * Purpose: connection orchestration only handles device selection and UI entry;
        * open/first-read/retry/fallback are delegated to protocol-layer bootstrapSession.
-       * @param {any} targetDev - Target HID device.
+       * @param {any} plan - Resolved connection plan.
        * @returns {Promise<any>} Async result.
        */
-      const performHandshake = async (targetDev) => {
-        if (!targetDev) throw new Error("No HID device selected.");
+      const performHandshake = async (plan) => {
+        const resolvedPlan = normalizeConnectionPlan(plan);
+        const controlDevice = resolvedPlan?.controlDevice || null;
+        const eventDevice = resolvedPlan?.eventDevice || controlDevice || null;
+        if (!controlDevice) throw new Error("No HID control device selected.");
+        const planDevices = getPlanDevices(resolvedPlan);
+        const planDescription = describeConnectionPlan(resolvedPlan);
         const handshakeSeq = (++__handshakeSeq);
         __activeHandshakeSeq = handshakeSeq;
         try {
-        // 防止下面 close() 触发浏览器的 disconnect 事件导致 UI 退回浅色页
-        if (hidApi && hidApi.device === targetDev) {
-            hidApi.device = null;
-        }
+          const planTouchesCurrentSession = planDevices.some((device) => (
+            device && (
+              typeof hidApi?.matchesHidDevice === "function"
+                ? hidApi.matchesHidDevice(device)
+                : hidApi?.device === device
+            )
+          ));
 
-        try {
-          if (targetDev.opened) {
-            await targetDev.close();
-            await new Promise(r => setTimeout(r, 50));
+          try {
+            await hidApi.close?.({ clearListeners: false });
+          } catch (_) {
+            try { await hidApi.close?.(); } catch (_) {}
           }
-        } catch (_) {}
 
-        hidApi.device = targetDev;
-        applyCapabilityStateToRuntime(hidApi.capabilities);
-        let displayName = ProtocolApi.resolveMouseDisplayName(targetDev.vendorId, targetDev.productId, targetDev.productName || "HID Device");
-        console.log("HID Open, Handshaking:", displayName);
+          if (planTouchesCurrentSession) {
+            try { hidApi.device = null; } catch (_) {}
+          }
 
-        __writesEnabled = false;
-        __armOnboardMemoryAutoEnableCheck();
-
-        if (widgetDeviceName) widgetDeviceName.textContent = displayName;
-        if (widgetDeviceMeta) widgetDeviceMeta.textContent = window.tr("正在读取配置...", "Reading configuration...");
-
-        const { cfg } = await withHandshakeTimeout(
-          () => hidApi.bootstrapSession({
-            device: targetDev,
-            reason: "connect",
-            readTimeoutMs: bootstrapReadTimeoutMs,
-            readRetry: bootstrapReadRetry,
-            // Whether connect flow allows protocol layer to use old-cache fallback.
-            useCacheFallback: !strictConnectNoCacheFallback,
-          }),
-          handshakeTimeoutMs,
-          {
-            onTimeout: async () => {
-              if (__activeHandshakeSeq !== handshakeSeq) return;
-              try {
-                await hidApi.close?.({ clearListeners: false });
-              } catch (_) {
-                try { await hidApi.close?.(); } catch (_) {}
+          for (const planDevice of planDevices) {
+            try {
+              if (planDevice?.opened) {
+                await planDevice.close();
+                await new Promise((resolve) => setTimeout(resolve, 50));
               }
-            },
+            } catch (_) {}
           }
-        );
-        if (__activeHandshakeSeq !== handshakeSeq) {
-          const staleErr = new Error(window.tr("握手结果已过期", "Handshake result is stale"));
-          staleErr.code = "STALE_HANDSHAKE_RESULT";
-          throw staleErr;
-        }
-        handshakeCfg = (cfg && typeof cfg === "object") ? cfg : null;
-        if (cfg && typeof cfg === "object") __cachedDeviceConfig = cfg;
 
-        applyConfigToUi(cfg);
-        const cfgDeviceName = String(cfg?.deviceName || "").trim();
-        if (cfgDeviceName) {
-          displayName = cfgDeviceName;
+          hidApi.device = controlDevice;
+          applyCapabilityStateToRuntime(hidApi.capabilities);
+          let displayName = ProtocolApi.resolveMouseDisplayName(
+            controlDevice.vendorId,
+            controlDevice.productId,
+            controlDevice.productName || "HID Device"
+          );
+          console.log(`[HID] Handshake plan: ${resolvedPlan?.debugLabel || planDescription}`);
+          console.log("HID Open, Handshaking:", displayName);
+
+          __writesEnabled = false;
+          __armOnboardMemoryAutoEnableCheck();
+
           if (widgetDeviceName) widgetDeviceName.textContent = displayName;
-        }
-        if (widgetDeviceMeta) widgetDeviceMeta.textContent = window.tr("点击断开", "Click to Disconnect");
-        if (typeof updatePollingCycleUI === "function") {
-          const rate = readStandardValueWithIntent(cfg, "keyScanningRate") || 1000;
-          updatePollingCycleUI(rate, false);
-        }
+          if (widgetDeviceMeta) widgetDeviceMeta.textContent = window.tr("正在读取配置...", "Reading configuration...");
 
-        if (document.body.classList.contains("landing-active")) {
-          __prepareLandingEnterGate({ deviceName: displayName, cfg });
-          await enterAppWithLiquidTransition(__landingClickOrigin);
-        }
+          const { cfg } = await withHandshakeTimeout(
+            () => hidApi.bootstrapSession({
+              device: controlDevice,
+              eventDevice,
+              reason: "connect",
+              readTimeoutMs: bootstrapReadTimeoutMs,
+              readRetry: bootstrapReadRetry,
+              // Whether connect flow allows protocol layer to use old-cache fallback.
+              useCacheFallback: !strictConnectNoCacheFallback,
+            }),
+            handshakeTimeoutMs,
+            {
+              onTimeout: async () => {
+                if (__activeHandshakeSeq !== handshakeSeq) return;
+                try {
+                  await hidApi.close?.({ clearListeners: false });
+                } catch (_) {
+                  try { await hidApi.close?.(); } catch (_) {}
+                }
+              },
+            }
+          );
+          if (__activeHandshakeSeq !== handshakeSeq) {
+            const staleErr = new Error(window.tr("握手结果已过期", "Handshake result is stale"));
+            staleErr.code = "STALE_HANDSHAKE_RESULT";
+            throw staleErr;
+          }
+          handshakeCfg = (cfg && typeof cfg === "object") ? cfg : null;
+          if (cfg && typeof cfg === "object") __cachedDeviceConfig = cfg;
 
-        __writesEnabled = true;
+          applyConfigToUi(cfg);
+          const cfgDeviceName = String(cfg?.deviceName || "").trim();
+          if (cfgDeviceName) {
+            displayName = cfgDeviceName;
+            if (widgetDeviceName) widgetDeviceName.textContent = displayName;
+          }
+          if (widgetDeviceMeta) widgetDeviceMeta.textContent = window.tr("点击断开", "Click to Disconnect");
+          if (typeof updatePollingCycleUI === "function") {
+            const rate = readStandardValueWithIntent(cfg, "keyScanningRate") || 1000;
+            updatePollingCycleUI(rate, false);
+          }
 
-        if (typeof applyKeymapFromCfg === 'function') {
-          const cachedCfg = getCachedDeviceConfig();
-          if (cachedCfg) applyKeymapFromCfg(cachedCfg);
-        }
-        return displayName;
+          if (document.body.classList.contains("landing-active")) {
+            __prepareLandingEnterGate({ deviceName: displayName, cfg });
+            await enterAppWithLiquidTransition(__landingClickOrigin);
+          }
+
+          __writesEnabled = true;
+
+          if (typeof applyKeymapFromCfg === "function") {
+            const cachedCfg = getCachedDeviceConfig();
+            if (cachedCfg) applyKeymapFromCfg(cachedCfg);
+          }
+          return displayName;
         } finally {
           if (__activeHandshakeSeq === handshakeSeq) __activeHandshakeSeq = 0;
         }
@@ -8931,7 +9092,7 @@ function openDrawer(btn) {
       let chosenDev = null;
       let handshakeCfg = null;
 
-      for (const cand of candidates) {
+      for (const plan of handshakePlans) {
         for (let i = 0; i < 2; i++) {
           try {
             if (i > 0) {
@@ -8944,12 +9105,15 @@ function openDrawer(btn) {
               await new Promise(r => setTimeout(r, 500));
             }
 
-            displayName = await performHandshake(cand);
-            chosenDev = cand;
+            displayName = await performHandshake(plan);
+            chosenDev = normalizeConnectionPlan(plan)?.controlDevice || null;
             break;
           } catch (err) {
             lastErr = err;
-            console.warn(`Handshake failed (cand=${cand?.vendorId?.toString?.(16)}:${cand?.productId?.toString?.(16)} attempt=${i+1}):`, err);
+            console.warn(
+              `Handshake failed (plan=${plan?.debugLabel || describeConnectionPlan(plan)} attempt=${i + 1}):`,
+              err
+            );
           }
         }
         if (displayName) break;
@@ -8963,7 +9127,7 @@ function openDrawer(btn) {
         await new Promise(r => setTimeout(r, 120));
       }
 
-      if (!displayName) throw lastErr;
+      if (!displayName) throw (lastErr || new Error("No HID connection plan available."));
 
 
       hidLinked = true;
@@ -9181,7 +9345,12 @@ function openDrawer(btn) {
       navigator.hid.addEventListener("disconnect", (e) => {
         try {
           const api = window.__HID_API_INSTANCE__;
-          if (api?.device && e?.device === api.device) {
+          const matches = (
+            typeof api?.matchesHidDevice === "function"
+              ? api.matchesHidDevice(e?.device)
+              : (api?.device && e?.device === api.device)
+          );
+          if (matches) {
             disconnectHid().catch(() => {});
           }
         } catch {}

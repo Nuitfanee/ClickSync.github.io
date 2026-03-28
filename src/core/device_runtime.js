@@ -50,7 +50,100 @@
   const NINJUTSO_PRODUCT_ID = 0xeb02;
   const NINJUTSO_ALLOWED_NAME = "ninjutso sora v3";
   const RAZER_VENDOR_ID = 0x1532;
-  const RAZER_SUPPORTED_PIDS = new Set([0x00b3, 0x00b6, 0x00b7, 0x00c0, 0x00c1, 0x00c2, 0x00c3, 0x00c4, 0x00c5]);
+  const RAZER_SUPPORTED_PIDS = new Set([0x00b3, 0x00b6, 0x00b7, 0x00c0, 0x00c1, 0x00c2, 0x00c3, 0x00c4, 0x00c5, 0x00e6]);
+
+  function _isRazerSupportedVidPid(d) {
+    return (
+      Number(d?.vendorId) === RAZER_VENDOR_ID
+      && RAZER_SUPPORTED_PIDS.has(Number(d?.productId))
+    );
+  }
+
+  function _normalizeHidProductName(name) {
+    return String(name || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+  }
+
+  function _walkHidCollections(collections, visit) {
+    for (const collection of (Array.isArray(collections) ? collections : [])) {
+      visit(collection);
+      if (Array.isArray(collection?.children) && collection.children.length) {
+        _walkHidCollections(collection.children, visit);
+      }
+    }
+  }
+
+  function _countHidReports(d, reportKey) {
+    if (Array.isArray(d?.[reportKey]) && d[reportKey].length) return d[reportKey].length;
+    let count = 0;
+    _walkHidCollections(d?.collections, (collection) => {
+      if (Array.isArray(collection?.[reportKey])) count += collection[reportKey].length;
+    });
+    return count;
+  }
+
+  function _hasFeatureReports(d) {
+    return _countHidReports(d, "featureReports") > 0;
+  }
+
+  function _hasInputReports(d) {
+    return _countHidReports(d, "inputReports") > 0;
+  }
+
+  function _buildRazerHandleSummary(d) {
+    const collections = Array.isArray(d?.collections) ? d.collections : [];
+    const firstCollection = collections[0] || null;
+    const featureReportCount = _countHidReports(d, "featureReports");
+    const inputReportCount = _countHidReports(d, "inputReports");
+    return {
+      vendorId: Number(d?.vendorId ?? 0),
+      productId: Number(d?.productId ?? 0),
+      productName: String(d?.productName || ""),
+      collectionCount: collections.length,
+      usagePage: Number(firstCollection?.usagePage ?? NaN),
+      usage: Number(firstCollection?.usage ?? NaN),
+      singleCollection: collections.length === 1,
+      featureReportCount,
+      inputReportCount,
+      hasFeatureReports: featureReportCount > 0,
+      hasInputReports: inputReportCount > 0,
+    };
+  }
+
+  function _sameRazerModel(a, b) {
+    if (!_isRazerSupportedVidPid(a) || !_isRazerSupportedVidPid(b)) return false;
+    if (Number(a?.productId) !== Number(b?.productId)) return false;
+    const aName = _normalizeHidProductName(a?.productName);
+    const bName = _normalizeHidProductName(b?.productName);
+    if (aName && bName) return aName === bName;
+    return true;
+  }
+
+  function _formatRazerHandleRef(d) {
+    const vid = Number(d?.vendorId ?? 0) & 0xffff;
+    const pid = Number(d?.productId ?? 0) & 0xffff;
+    return `0x${vid.toString(16).padStart(4, "0")}:0x${pid.toString(16).padStart(4, "0")}`;
+  }
+
+  function _buildRazerDebugLabel(controlSummary, eventSummary, eventMode) {
+    const controlLabel = `${_formatRazerHandleRef(controlSummary)} ctrl[c=${controlSummary.collectionCount},f=${controlSummary.hasFeatureReports ? "y" : "n"},i=${controlSummary.hasInputReports ? "y" : "n"}]`;
+    if (eventMode === "shared") return `${controlLabel} evt=shared`;
+    return `${controlLabel} evt=${_formatRazerHandleRef(eventSummary)}[c=${eventSummary.collectionCount},i=${eventSummary.hasInputReports ? "y" : "n"}]`;
+  }
+
+  function _buildRazerConnectionPlanError(code, handleSummaries = []) {
+    const messageByCode = {
+      MISSING_RAZER_CONTROL_INTERFACE: "Missing Razer control interface with feature reports",
+      MISSING_RAZER_EVENT_INTERFACE: "Missing Razer event interface with input reports",
+    };
+    return {
+      code,
+      message: messageByCode[code] || "Failed to resolve Razer connection plan",
+      handleSummaries: Array.isArray(handleSummaries) ? handleSummaries.slice(0) : [],
+    };
+  }
 
   function _isRapooDevice(d) {
     return (
@@ -97,23 +190,8 @@
     );
   }
 
-  function _hasRazerPrimaryMouseCollection(d) {
-    // For Razer, prefer the primary mouse collection to avoid selecting
-    // sibling interfaces that may fail feature-report handshake.
-    if (!Array.isArray(d?.collections) || !d.collections.length) return true;
-    return d.collections.some((c) => {
-      const page = Number(c?.usagePage);
-      const usage = Number(c?.usage);
-      return page === 0x0001 && usage === 0x0002;
-    });
-  }
-
   function _isRazerDevice(d) {
-    return (
-      Number(d?.vendorId) === RAZER_VENDOR_ID &&
-      RAZER_SUPPORTED_PIDS.has(Number(d?.productId)) &&
-      _hasRazerPrimaryMouseCollection(d)
-    );
+    return _isRazerSupportedVidPid(d);
   }
 
   function _isAllowedNinjutsoName(d) {
@@ -406,19 +484,28 @@
    * @param {boolean} [opts.pinPrimary=false] - Whether to pin primary device first.
    * @returns {Promise<HIDDevice[]>} Filtered device list.
    */
-  async function _collectCandidatesByFilter(primary, preferType, { pinPrimary = false } = {}) {
+  async function _collectAuthorizedDevices({ primary = null, extraDevices = [] } = {}) {
     const uniq = [];
     const push = (d) => {
       if (!d) return;
+      if (!_passesConnectionFilter(d)) return;
       if (uniq.includes(d)) return;
       uniq.push(d);
     };
 
     push(primary);
+    for (const d of (Array.isArray(extraDevices) ? extraDevices : [])) push(d);
+
     try {
       const devs = await navigator.hid.getDevices();
       for (const d of (devs || [])) push(d);
     } catch (_) {}
+
+    return uniq;
+  }
+
+  async function _collectCandidatesByFilter(primary, preferType, { pinPrimary = false } = {}) {
+    const uniq = await _collectAuthorizedDevices({ primary });
 
     const t = preferType ? String(preferType).toLowerCase() : null;
     let list = [];
@@ -436,6 +523,103 @@
     return list;
   }
 
+  function resolveRazerConnectionPlans(devices, { primaryDevice = null } = {}) {
+    const handles = _filterDevicesByType(devices, "razer").map((device, index) => ({
+      device,
+      index,
+      summary: _buildRazerHandleSummary(device),
+    }));
+    const handleSummaries = handles.map((item) => item.summary);
+    const controlCandidates = handles.filter((item) => item.summary.hasFeatureReports);
+
+    if (!controlCandidates.length) {
+      return {
+        connectionPlans: [],
+        connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_CONTROL_INTERFACE", handleSummaries),
+      };
+    }
+
+    const plans = [];
+    for (const control of controlCandidates) {
+      const controlSummary = control.summary;
+      if (controlSummary.hasInputReports) {
+        plans.push({
+          controlDevice: control.device,
+          eventDevice: control.device,
+          eventMode: "shared",
+          debugLabel: _buildRazerDebugLabel(controlSummary, controlSummary, "shared"),
+          controlSummary,
+          eventSummary: controlSummary,
+          _sortKey: {
+            primaryModel: _sameRazerModel(control.device, primaryDevice),
+            controlSingleCollection: !!controlSummary.singleCollection,
+            sharedEvent: true,
+            controlIndex: control.index,
+            eventIndex: control.index,
+          },
+        });
+        continue;
+      }
+
+      const siblingEvents = handles.filter((item) => (
+        item.device !== control.device
+        && item.summary.hasInputReports
+        && _sameRazerModel(item.device, control.device)
+      ));
+
+      for (const event of siblingEvents) {
+        plans.push({
+          controlDevice: control.device,
+          eventDevice: event.device,
+          eventMode: "separate",
+          debugLabel: _buildRazerDebugLabel(controlSummary, event.summary, "separate"),
+          controlSummary,
+          eventSummary: event.summary,
+          _sortKey: {
+            primaryModel: _sameRazerModel(control.device, primaryDevice),
+            controlSingleCollection: !!controlSummary.singleCollection,
+            sharedEvent: false,
+            controlIndex: control.index,
+            eventIndex: event.index,
+          },
+        });
+      }
+    }
+
+    if (!plans.length) {
+      return {
+        connectionPlans: [],
+        connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_EVENT_INTERFACE", handleSummaries),
+      };
+    }
+
+    plans.sort((a, b) => {
+      const aKey = a._sortKey || {};
+      const bKey = b._sortKey || {};
+      const primaryDiff = Number(!!bKey.primaryModel) - Number(!!aKey.primaryModel);
+      if (primaryDiff) return primaryDiff;
+      const singleDiff = Number(!!bKey.controlSingleCollection) - Number(!!aKey.controlSingleCollection);
+      if (singleDiff) return singleDiff;
+      const sharedDiff = Number(!!bKey.sharedEvent) - Number(!!aKey.sharedEvent);
+      if (sharedDiff) return sharedDiff;
+      const controlIndexDiff = Number(aKey.controlIndex ?? 0) - Number(bKey.controlIndex ?? 0);
+      if (controlIndexDiff) return controlIndexDiff;
+      return Number(aKey.eventIndex ?? 0) - Number(bKey.eventIndex ?? 0);
+    });
+
+    return {
+      connectionPlans: plans.map((plan) => ({
+        controlDevice: plan.controlDevice,
+        eventDevice: plan.eventDevice,
+        eventMode: plan.eventMode,
+        debugLabel: plan.debugLabel,
+        controlSummary: plan.controlSummary,
+        eventSummary: plan.eventSummary,
+      })),
+      connectionPlanError: null,
+    };
+  }
+
 
   // ============================================================
   // 5) Connection strategy
@@ -448,7 +632,7 @@
    */
   // Browser permission entrypoint for manual HID selection.
   // Maintainers: keep filter source centralized in DEVICE_REGISTRY.
-  async function requestDevice({ preferDifferentFrom = null } = {}) {
+  async function _requestAuthorizedDeviceSelection({ preferDifferentFrom = null } = {}) {
     if (!navigator.hid) throw new Error("当前浏览器不支持 WebHID");
 
     const allFilters = DEVICE_REGISTRY.flatMap((entry) => entry.filters);
@@ -463,9 +647,13 @@
     }
 
     const devices = await navigator.hid.requestDevice({ filters: uniqueFilters });
-    if (!Array.isArray(devices) || !devices.length) return null;
+    if (!Array.isArray(devices) || !devices.length) {
+      return { devices: [], device: null };
+    }
     const filteredDevices = devices.filter(_passesConnectionFilter);
-    if (!filteredDevices.length) return null;
+    if (!filteredDevices.length) {
+      return { devices: [], device: null };
+    }
 
     const avoidType = preferDifferentFrom ? normalizeDeviceId(preferDifferentFrom) : null;
     if (avoidType && filteredDevices.length > 1) {
@@ -476,11 +664,24 @@
       const hasAvoid = typed.some((x) => x.type === avoidType);
       if (hasAvoid) {
         const preferred = typed.find((x) => x.type && x.type !== avoidType);
-        if (preferred?.dev) return preferred.dev;
+        if (preferred?.dev) {
+          return {
+            devices: filteredDevices,
+            device: preferred.dev,
+          };
+        }
       }
     }
 
-    return filteredDevices[0] || null;
+    return {
+      devices: filteredDevices,
+      device: filteredDevices[0] || null,
+    };
+  }
+
+  async function requestDevice({ preferDifferentFrom = null } = {}) {
+    const selection = await _requestAuthorizedDeviceSelection({ preferDifferentFrom });
+    return selection?.device || null;
   }
 
 
@@ -528,12 +729,27 @@
   async function autoConnect({ preferredType = null } = {}) {
     if (!navigator.hid) return { device: null, candidates: [], detectedType: null };
     const candidates = await _collectCandidatesByFilter(null, preferredType);
-    const device = candidates[0] || null;
+    let device = candidates[0] || null;
+    let detectedType = identifyDeviceType(device);
+    let connectionPlans = null;
+    let connectionPlanError = null;
+    if (detectedType === "razer") {
+      const authorizedDevices = await _collectAuthorizedDevices({ primary: device, extraDevices: candidates });
+      const resolved = resolveRazerConnectionPlans(authorizedDevices, { primaryDevice: device });
+      connectionPlans = Array.isArray(resolved?.connectionPlans) ? resolved.connectionPlans : [];
+      connectionPlanError = resolved?.connectionPlanError || null;
+      if (connectionPlans.length) {
+        device = connectionPlans[0].controlDevice || device;
+        detectedType = identifyDeviceType(device) || detectedType;
+      }
+    }
     return {
       device,
       candidates,
-      detectedType: identifyDeviceType(device),
+      detectedType,
       preferredType: preferredType || null,
+      connectionPlans,
+      connectionPlanError,
     };
   }
 
@@ -555,11 +771,16 @@
     if (!navigator.hid) throw new Error("当前浏览器不支持 WebHID");
 
     let primary = null;
+    let chooserDevices = [];
 
     if (mode && typeof mode === "object" && mode.vendorId) {
       primary = mode;
     } else if (mode === true) {
-      primary = await requestDevice({ preferDifferentFrom: preferredType || getSelectedDevice() });
+      const selection = await _requestAuthorizedDeviceSelection({
+        preferDifferentFrom: preferredType || getSelectedDevice(),
+      });
+      primary = selection?.device || null;
+      chooserDevices = Array.isArray(selection?.devices) ? selection.devices : [];
     } else if (primaryDevice) {
       primary = primaryDevice;
     } else {
@@ -582,8 +803,30 @@
         : (preferredType || detectedType)
     ) || getSelectedDevice();
     const candidates = await _collectCandidatesByFilter(primary, preferType, { pinPrimary });
+    let device = primary;
+    let connectionPlans = null;
+    let connectionPlanError = null;
+    if (detectedType === "razer") {
+      const authorizedDevices = await _collectAuthorizedDevices({
+        primary,
+        extraDevices: [...chooserDevices, ...candidates],
+      });
+      const resolved = resolveRazerConnectionPlans(authorizedDevices, { primaryDevice: primary });
+      connectionPlans = Array.isArray(resolved?.connectionPlans) ? resolved.connectionPlans : [];
+      connectionPlanError = resolved?.connectionPlanError || null;
+      if (connectionPlans.length) {
+        device = connectionPlans[0].controlDevice || device;
+      }
+    }
 
-    return { device: primary, candidates, detectedType, preferredType: preferType };
+    return {
+      device,
+      candidates,
+      detectedType,
+      preferredType: preferType,
+      connectionPlans,
+      connectionPlanError,
+    };
   }
 
 
@@ -672,6 +915,7 @@
     identifyDeviceType,
     autoConnect,
     connect,
+    resolveRazerConnectionPlans,
     ensureProtocolLoaded,
     whenProtocolReady,
   };
