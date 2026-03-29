@@ -206,6 +206,16 @@
     MEDIA_PLAY_OR_PAUSE: 0x00cd,
     VOLUME_UP: 0x00e9,
     VOLUME_DOWN: 0x00ea,
+    CALCULATOR: 0x0192,
+    THIS_PC: 0x0194,
+    WEB_BROWSER: 0x0223,
+    MAIL: 0x018a,
+    MEDIA_PLAYER: 0x0183,
+    WEB_BACK: 0x0224,
+    WEB_FORWARD: 0x0225,
+    WEB_REFRESH: 0x0227,
+    WEB_FAVORITES: 0x022a,
+    WEB_SEARCH: 0x0221,
   });
 
   const OFFICIAL_WIN8_SHORTCUT = Object.freeze({
@@ -934,6 +944,56 @@
           commandId: 0x86,
           dataSize: 0x26,
           arguments: [clampU8(profileId)],
+        });
+      },
+
+      setButtonMappingRep4(tx, sourceCode, actionQuad) {
+        const src = clampU16(sourceCode);
+        const action = Array.isArray(actionQuad) ? actionQuad.slice(0, 4) : [];
+        if (action.length !== 4) {
+          throw new ProtocolError("REP4 actionQuad must be [act0,act1,act2,act3]", "BAD_PARAM", {
+            actionQuad,
+          });
+        }
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x02,
+          commandId: 0x0c,
+          dataSize: 0x0a,
+          arguments: [
+            0x01,
+            src & 0xff,
+            (src >> 8) & 0xff,
+            clampU8(action[0]),
+            clampU8(action[1]),
+            clampU8(action[2]),
+            clampU8(action[3]),
+            0x00,
+            0x00,
+            0x00,
+          ],
+        });
+      },
+
+      getButtonMappingRep4(tx, sourceCode) {
+        const src = clampU16(sourceCode);
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x02,
+          commandId: 0x8c,
+          dataSize: 0x0a,
+          arguments: [
+            0x01,
+            src & 0xff,
+            (src >> 8) & 0xff,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+          ],
         });
       },
 
@@ -2380,7 +2440,17 @@
     "64:4": OFFICIAL_MEDIA_USAGE.MEDIA_PLAY_OR_PAUSE,
     "64:5": OFFICIAL_MEDIA_USAGE.NEXT_TRACK,
     "64:6": OFFICIAL_MEDIA_USAGE.PREVIOUS_TRACK,
+    "64:7": OFFICIAL_MEDIA_USAGE.CALCULATOR,
+    "64:8": OFFICIAL_MEDIA_USAGE.THIS_PC,
+    "64:9": OFFICIAL_MEDIA_USAGE.WEB_BROWSER,
+    "64:10": OFFICIAL_MEDIA_USAGE.MAIL,
+    "64:11": OFFICIAL_MEDIA_USAGE.MEDIA_PLAYER,
     "64:12": OFFICIAL_MEDIA_USAGE.MEDIA_STOP,
+    "64:13": OFFICIAL_MEDIA_USAGE.WEB_BACK,
+    "64:14": OFFICIAL_MEDIA_USAGE.WEB_FORWARD,
+    "64:15": OFFICIAL_MEDIA_USAGE.WEB_REFRESH,
+    "64:16": OFFICIAL_MEDIA_USAGE.WEB_FAVORITES,
+    "64:17": OFFICIAL_MEDIA_USAGE.WEB_SEARCH,
   });
 
   const OFFICIAL_PUBLIC_ACTION_BY_MEDIA_USAGE = new Map([
@@ -2390,7 +2460,17 @@
     [OFFICIAL_MEDIA_USAGE.MEDIA_PLAY_OR_PAUSE, { funckey: 0x40, keycode: 0x0004 }],
     [OFFICIAL_MEDIA_USAGE.NEXT_TRACK, { funckey: 0x40, keycode: 0x0005 }],
     [OFFICIAL_MEDIA_USAGE.PREVIOUS_TRACK, { funckey: 0x40, keycode: 0x0006 }],
+    [OFFICIAL_MEDIA_USAGE.CALCULATOR, { funckey: 0x40, keycode: 0x0007 }],
+    [OFFICIAL_MEDIA_USAGE.THIS_PC, { funckey: 0x40, keycode: 0x0008 }],
+    [OFFICIAL_MEDIA_USAGE.WEB_BROWSER, { funckey: 0x40, keycode: 0x0009 }],
+    [OFFICIAL_MEDIA_USAGE.MAIL, { funckey: 0x40, keycode: 0x000a }],
+    [OFFICIAL_MEDIA_USAGE.MEDIA_PLAYER, { funckey: 0x40, keycode: 0x000b }],
     [OFFICIAL_MEDIA_USAGE.MEDIA_STOP, { funckey: 0x40, keycode: 0x000c }],
+    [OFFICIAL_MEDIA_USAGE.WEB_BACK, { funckey: 0x40, keycode: 0x000d }],
+    [OFFICIAL_MEDIA_USAGE.WEB_FORWARD, { funckey: 0x40, keycode: 0x000e }],
+    [OFFICIAL_MEDIA_USAGE.WEB_REFRESH, { funckey: 0x40, keycode: 0x000f }],
+    [OFFICIAL_MEDIA_USAGE.WEB_FAVORITES, { funckey: 0x40, keycode: 0x0010 }],
+    [OFFICIAL_MEDIA_USAGE.WEB_SEARCH, { funckey: 0x40, keycode: 0x0011 }],
   ]);
 
   const OFFICIAL_MODIFIER_BITS_BY_LEGACY_USAGE = Object.freeze({
@@ -3417,16 +3497,9 @@
     async setButtonMappingBySelect(btnId, labelOrObj) {
       return this._opQueue.enqueue(async () => {
         await this._ensureOpen();
-        const pid = this._pid();
-        if (!supportsOfficialObmForPid(pid)) {
-          throw new ProtocolError("Button mapping is not available for this Razer model", "FEATURE_UNAVAILABLE", {
-            pid,
-            btnId,
-          });
-        }
         const slot = clampInt(btnId, 1, 6);
-        const buttonId = OFFICIAL_OBM_SLOT_TO_BUTTON_ID[slot];
-        if (!buttonId) {
+        const sourceCode = REP4_SOURCE_CODE_BY_BUTTON_ID[slot];
+        if (!sourceCode) {
           throw new ProtocolError(`Unsupported Razer button slot: ${btnId}`, "BAD_PARAM", { btnId });
         }
 
@@ -3438,9 +3511,10 @@
           });
         }
 
-        const assignment = buildOfficialObmAssignmentFromPublicAction(resolved.action);
-        if (!assignment) {
-          throw new ProtocolError(`Button action is not writable via official OBM: ${String(resolved.label || resolved.source || "")}`, "FEATURE_UNAVAILABLE", {
+        const quadlet = resolveRep4ActionFromLabel(resolved.source || resolved.label || "")
+          || resolveRep4ActionFromObject(resolved.action);
+        if (!Array.isArray(quadlet) || quadlet.length < 4) {
+          throw new ProtocolError(`Button action is not writable via existing Razer command path: ${String(resolved.label || resolved.source || "")}`, "FEATURE_UNAVAILABLE", {
             btnId: slot,
             label: resolved.label || resolved.source || "",
           });
@@ -3448,30 +3522,14 @@
 
         const tx = txForField(this._pid(), "buttonMappings");
         await this._driver.runSequence([{
-          packet: ProtocolCodec.commands.setSingleButtonAssignment(
+          packet: ProtocolCodec.commands.setButtonMappingRep4(
             tx,
-            OFFICIAL_MOUSE_PROFILE_ID,
-            buttonId,
-            OFFICIAL_BUTTON_MODE.NORMAL,
-            assignment.functionId,
-            assignment.dataSize,
-            assignment.dataArray
+            sourceCode,
+            quadlet
           ),
         }]);
 
-        const verifyRes = await this._safeQuery(
-          ProtocolCodec.commands.getSingleButtonAssignment(tx, OFFICIAL_MOUSE_PROFILE_ID, buttonId)
-        );
-        if (!verifyRes?.arguments) {
-          throw new ProtocolError("Button mapping verify read failed", "VERIFY_FAILED", {
-            btnId: slot,
-            buttonId,
-          });
-        }
-
-        const verified = buildPublicActionFromOfficialObmAssignment(
-          parseOfficialObmAssignment(verifyRes, OFFICIAL_BUTTON_MODE.NORMAL)
-        );
+        const verified = await this._readSingleRep4ButtonMapping(slot, { strictStability: true });
         if (!isSameButtonAction(verified, resolved.action)) {
           throw new ProtocolError("Button mapping verify mismatch", "VERIFY_FAILED", {
             btnId: slot,
@@ -3484,7 +3542,7 @@
           ? this._cfg.buttonMappings.slice(0, 6)
           : buildDefaultRazerButtonMappings();
         while (nextMappings.length < 6) {
-          nextMappings.push(buildDefaultRazerButtonMappings()[nextMappings.length] || buildUnknownOfficialObmEntry());
+          nextMappings.push(buildDefaultRazerButtonMappings()[nextMappings.length] || buildUnknownRep4Entry());
         }
         nextMappings[slot - 1] = verified;
         this._cfg = Object.assign({}, this._cfg, { buttonMappings: nextMappings });
@@ -3509,6 +3567,68 @@
         }
         return fallback;
       }
+    }
+
+    async _readSingleRep4ButtonMapping(btnId, { strictStability = false } = {}) {
+      const slot = clampInt(btnId, 1, 6);
+      const sourceCode = REP4_SOURCE_CODE_BY_BUTTON_ID[slot];
+      if (!sourceCode) {
+        throw new ProtocolError(`Unsupported Razer button slot: ${btnId}`, "BAD_PARAM", { btnId });
+      }
+      const tx = txForField(this._pid(), "buttonMappings");
+      const requiredStableHits = strictStability ? REP4_READ_STABLE_HITS_REQUIRED : 1;
+      let stableHits = 0;
+      let lastQuadletKey = "";
+      let lastDecoded = null;
+      let lastRetryableErr = null;
+
+      for (let attempt = 1; attempt <= REP4_READ_MAX_ATTEMPTS; attempt++) {
+        try {
+          const res = await this._safeQuery(
+            ProtocolCodec.commands.getButtonMappingRep4(tx, sourceCode),
+            null
+          );
+          if (!res?.arguments) {
+            throw new ProtocolError("REP4 mapping response is empty", "REP4_READ_EMPTY", {
+              btnId: slot,
+              sourceCode,
+              attempt,
+            });
+          }
+
+          const quadlet = extractRep4ReadQuadlet(slot, sourceCode, res);
+          if (!isKnownRep4Quadlet(quadlet)) {
+            throw new ProtocolError("REP4 mapping response contains unknown action", "REP4_READ_UNKNOWN_ACTION", {
+              btnId: slot,
+              sourceCode,
+              quadlet: quadlet.slice(0),
+            });
+          }
+
+          const decoded = resolveActionFromRep4Quadlet(slot, quadlet);
+          const key = quadletKey(quadlet[0], quadlet[1], quadlet[2], quadlet[3]);
+          stableHits = key === lastQuadletKey ? stableHits + 1 : 1;
+          lastQuadletKey = key;
+          lastDecoded = decoded;
+
+          if (stableHits >= requiredStableHits) {
+            return decoded;
+          }
+        } catch (err) {
+          if (!isRetryableRep4ReadError(err)) throw err;
+          lastRetryableErr = err;
+        }
+
+        if (attempt < REP4_READ_MAX_ATTEMPTS) {
+          await sleep(REP4_READ_RETRY_DELAY_MS);
+        }
+      }
+
+      if (lastDecoded) return lastDecoded;
+      throw lastRetryableErr || new ProtocolError("REP4 mapping response is unstable", "REP4_READ_UNSTABLE", {
+        btnId: slot,
+        sourceCode,
+      });
     }
 
     async _readButtonMappingsSnapshot({ strictStability = false, connectFastPath = false } = {}) {
@@ -3811,7 +3931,7 @@
   ProtocolApi.listKeyActionsByType = function listKeyActionsByType() {
     const buckets = Object.create(null);
     for (const [label, action] of Object.entries(KEYMAP_ACTIONS)) {
-      if (!OFFICIAL_OBM_WRITABLE_LABELS.has(label)) continue;
+      if (!REP4_WRITABLE_LABELS.has(label)) continue;
       const type = String(action?.type || "system");
       if (!buckets[type]) buckets[type] = [];
       buckets[type].push(label);
