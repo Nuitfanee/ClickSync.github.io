@@ -93,6 +93,11 @@
   const RAZER_NOT_ALLOWED_SAME_ID_RETRY = 0;
   // Some wireless paths need a short settle window right after open().
   const RAZER_POST_OPEN_SETTLE_MS = 60;
+  // OBM button I/O is noticeably more timing-sensitive than the rest of the
+  // snapshot traffic, especially on wireless dongle paths.
+  const RAZER_OBM_BUTTON_IO_WAIT_MS = 24;
+  const RAZER_OBM_BUTTON_IO_RETRY = 3;
+  const RAZER_OBM_BUTTON_IO_RETRY_DELAY_MS = 24;
   // Official Synapse WebHID mouse control path uses Consumer usage page.
   const RAZER_WEBHID_CONTROL_USAGE_PAGE = 0x0c;
 
@@ -143,6 +148,18 @@
   const OFFICIAL_MOUSE_PROFILE_ID = 0x01;
   const OFFICIAL_PROXIMITY_CLASS_ID = 0x00;
   const OFFICIAL_PROXIMITY_SENSOR_ID = 0x04;
+  const DEFAULT_RAZER_SMART_TRACKING_PUBLIC_STATE = Object.freeze({
+    smartTrackingMode: "symmetric",
+    smartTrackingLevel: 1,
+    smartTrackingLiftDistance: 13,
+    smartTrackingLandingDistance: 12,
+  });
+  const DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL = Object.freeze({
+    isAsymmetric: false,
+    trackingDistance: 2,
+    liftOffDistance: 13,
+    landingDistance: 12,
+  });
 
   const OFFICIAL_BUTTON_MODE = Object.freeze({
     NORMAL: 0x00,
@@ -175,6 +192,10 @@
     WIN8_SHORTCUTS_KEY: 0x15,
   });
 
+  // Synapse Web mouse OBM button commands use a fixed data_size of 0x50 even
+  // though only the first 3 or 10 argument bytes are semantically populated.
+  const OFFICIAL_OBM_SINGLE_BUTTON_ASSIGNMENT_DATA_SIZE = 0x50;
+
   const OFFICIAL_OBM_BUTTON_TARGET = Object.freeze({
     LEFT_BUTTON: 0x01,
     RIGHT_BUTTON: 0x02,
@@ -185,6 +206,14 @@
     SCROLL_DOWN: 0x0a,
     DPI_CYCLE_UP: 0x60,
     DPI_CYCLE_DOWN: 0x61,
+  });
+
+  const OFFICIAL_OBM_DPI_ACTION = Object.freeze({
+    DPI_UP: 0x01,
+    DPI_DOWN: 0x02,
+    DPI_CLUTCH: 0x05,
+    DPI_CYCLE_UP: 0x06,
+    DPI_CYCLE_DOWN: 0x07,
   });
 
   const OFFICIAL_MODIFIER_BITS = Object.freeze({
@@ -223,17 +252,6 @@
     XBOX_GAME_BAR: 100,
     CYCLE_APPS: 101,
   });
-
-  const OFFICIAL_OBM_SUPPORTED_PID_SET = new Set([
-    PID.VIPER_V3_PRO_WIRED,
-    PID.VIPER_V3_PRO_WIRELESS,
-    PID.VIPER_V4_PRO_WIRED,
-    PID.VIPER_V4_PRO_WIRELESS,
-  ]);
-
-  function supportsOfficialObmForPid(pid) {
-    return OFFICIAL_OBM_SUPPORTED_PID_SET.has(clampU16(pid));
-  }
 
   function buildPidMatrixRow(pid, name, overrides = null) {
     const normalizedPid = clampU16(pid);
@@ -414,6 +432,33 @@
   function getWaitMsForPid(pid) {
     void pid;
     return 0;
+  }
+
+  function isPermissionPathError(err) {
+    const name = String(err?.name || "");
+    const msg = String(err?.message || "").toLowerCase();
+    return (
+      name === "NotAllowedError"
+      || msg.includes("notallowederror")
+      || msg.includes("failed to write the feature report")
+      || msg.includes("failed to receive the feature report")
+      || msg.includes("failed to read the feature report")
+    );
+  }
+
+  function shouldRetryOfficialObmButtonIoError(err) {
+    if (isPermissionPathError(err)) return true;
+    const code = String(err?.code || "");
+    return (
+      code === "IO_READ_TIMEOUT"
+      || code === "IO_WRITE_TIMEOUT"
+      || code === "DEVICE_COMMAND_NEW_COMMAND"
+      || code === "DEVICE_BUSY"
+      || code === "DEVICE_COMMAND_FAILURE"
+      || code === "DEVICE_COMMAND_TIMEOUT"
+      || code === "RESPONSE_MISMATCH"
+      || code === "RESPONSE_VALIDATION_FAILED"
+    );
   }
 
   function buildCapabilities(pid) {
@@ -676,11 +721,7 @@
               throw err;
             }
 
-            const isNotAllowed = name === "NotAllowedError" || msg.includes("notallowederror");
-            const isFeatureWriteErr = msg.includes("failed to write the feature report");
-            const isFeatureReadErr = msg.includes("failed to receive the feature report")
-              || msg.includes("failed to read the feature report");
-            const isPermissionPathErr = isNotAllowed || isFeatureWriteErr || isFeatureReadErr;
+            const isPermissionPathErr = isPermissionPathError(err);
 
             if (isPermissionPathErr) {
               const permissionRetryBudget = Math.min(retryBudget, RAZER_NOT_ALLOWED_SAME_ID_RETRY);
@@ -947,63 +988,18 @@
         });
       },
 
-      setButtonMappingRep4(tx, sourceCode, actionQuad) {
-        const src = clampU16(sourceCode);
-        const action = Array.isArray(actionQuad) ? actionQuad.slice(0, 4) : [];
-        if (action.length !== 4) {
-          throw new ProtocolError("REP4 actionQuad must be [act0,act1,act2,act3]", "BAD_PARAM", {
-            actionQuad,
-          });
-        }
-        return ProtocolCodec.encodeRazerReport({
-          transactionId: tx,
-          commandClass: 0x02,
-          commandId: 0x0c,
-          dataSize: 0x0a,
-          arguments: [
-            0x01,
-            src & 0xff,
-            (src >> 8) & 0xff,
-            clampU8(action[0]),
-            clampU8(action[1]),
-            clampU8(action[2]),
-            clampU8(action[3]),
-            0x00,
-            0x00,
-            0x00,
-          ],
-        });
-      },
-
-      getButtonMappingRep4(tx, sourceCode) {
-        const src = clampU16(sourceCode);
+      getSingleButtonAssignment(
+        tx,
+        profileId = OFFICIAL_MOUSE_PROFILE_ID,
+        buttonId = 0x01,
+        mode = OFFICIAL_BUTTON_MODE.NORMAL
+      ) {
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
           commandClass: 0x02,
           commandId: 0x8c,
-          dataSize: 0x0a,
-          arguments: [
-            0x01,
-            src & 0xff,
-            (src >> 8) & 0xff,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-          ],
-        });
-      },
-
-      getSingleButtonAssignment(tx, profileId = OFFICIAL_MOUSE_PROFILE_ID, buttonId = 0x01) {
-        return ProtocolCodec.encodeRazerReport({
-          transactionId: tx,
-          commandClass: 0x08,
-          commandId: 0x84,
-          dataSize: 0x02,
-          arguments: [clampU8(profileId), clampU8(buttonId)],
+          dataSize: OFFICIAL_OBM_SINGLE_BUTTON_ASSIGNMENT_DATA_SIZE,
+          arguments: [clampU8(profileId), clampU8(buttonId), clampU8(mode)],
         });
       },
 
@@ -1026,9 +1022,9 @@
         out.set(dataArray.subarray(0, 5), 5);
         return ProtocolCodec.encodeRazerReport({
           transactionId: tx,
-          commandClass: 0x08,
-          commandId: 0x04,
-          dataSize: out.length,
+          commandClass: 0x02,
+          commandId: 0x0c,
+          dataSize: OFFICIAL_OBM_SINGLE_BUTTON_ASSIGNMENT_DATA_SIZE,
           arguments: out,
         });
       },
@@ -1420,6 +1416,18 @@
       return clampInt(v, 0, 2);
     },
 
+    normalizeSmartTrackingTrackingDistance(v) {
+      return clampInt(v, 1, 3);
+    },
+
+    smartTrackingLevelToTrackingDistance(v) {
+      return clampInt(v, 0, 2) + 1;
+    },
+
+    trackingDistanceToSmartTrackingLevel(v) {
+      return clampInt(v, 1, 3) - 1;
+    },
+
     normalizeSmartTrackingDistances(liftDistance, landingDistance) {
       let lift = clampInt(liftDistance, 2, 26);
       let landing = clampInt(landingDistance, 1, 25);
@@ -1460,6 +1468,53 @@
       return clampInt(Math.round((x * 100) / 255), 0, 100);
     },
   });
+
+  function normalizePublicSmartTrackingState(raw = null) {
+    const seed = isObject(raw) ? raw : {};
+    const mode = TRANSFORMERS.normalizeSmartTrackingMode(
+      seed.smartTrackingMode ?? DEFAULT_RAZER_SMART_TRACKING_PUBLIC_STATE.smartTrackingMode
+    );
+    const level = TRANSFORMERS.normalizeSmartTrackingLevel(
+      seed.smartTrackingLevel ?? DEFAULT_RAZER_SMART_TRACKING_PUBLIC_STATE.smartTrackingLevel
+    );
+    const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
+      seed.smartTrackingLiftDistance ?? DEFAULT_RAZER_SMART_TRACKING_PUBLIC_STATE.smartTrackingLiftDistance,
+      seed.smartTrackingLandingDistance ?? DEFAULT_RAZER_SMART_TRACKING_PUBLIC_STATE.smartTrackingLandingDistance
+    );
+    return {
+      smartTrackingMode: mode,
+      smartTrackingLevel: level,
+      smartTrackingLiftDistance: dist.lift,
+      smartTrackingLandingDistance: dist.landing,
+    };
+  }
+
+  function buildOfficialSmartTrackingModelFromPublicState(raw = null) {
+    const publicState = normalizePublicSmartTrackingState(raw);
+    return {
+      isAsymmetric: publicState.smartTrackingMode === "asymmetric",
+      trackingDistance: TRANSFORMERS.smartTrackingLevelToTrackingDistance(publicState.smartTrackingLevel),
+      liftOffDistance: publicState.smartTrackingLiftDistance,
+      landingDistance: publicState.smartTrackingLandingDistance,
+    };
+  }
+
+  function buildPublicSmartTrackingStateFromOfficialModel(raw = null) {
+    const seed = isObject(raw) ? raw : {};
+    const trackingDistance = TRANSFORMERS.normalizeSmartTrackingTrackingDistance(
+      seed.trackingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.trackingDistance
+    );
+    const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
+      seed.liftOffDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.liftOffDistance,
+      seed.landingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.landingDistance
+    );
+    return {
+      smartTrackingMode: seed.isAsymmetric ? "asymmetric" : "symmetric",
+      smartTrackingLevel: TRANSFORMERS.trackingDistanceToSmartTrackingLevel(trackingDistance),
+      smartTrackingLiftDistance: dist.lift,
+      smartTrackingLandingDistance: dist.landing,
+    };
+  }
 
   function requireCapability(caps, capKey, featureName, pid) {
     if (!caps?.[capKey]) {
@@ -1641,23 +1696,19 @@
       kind: "virtual",
       priority: 53,
       triggers: ["smartTrackingMode", "smartTrackingLevel", "smartTrackingLiftDistance", "smartTrackingLandingDistance"],
-      plan({ pid, caps, patch, nextState }) {
+      plan({ pid, caps, nextState }) {
         requireCapability(caps, "smartTracking", "smartTracking", pid);
         const tx = txForField(pid, "smartTracking");
-        const mode = TRANSFORMERS.normalizeSmartTrackingMode(nextState.smartTrackingMode);
+        const officialSmartTracking = buildOfficialSmartTrackingModelFromPublicState(nextState);
         const seq = [{ packet: ProtocolCodec.commands.setProximitySensorState(tx, OFFICIAL_PROXIMITY_CLASS_ID, OFFICIAL_PROXIMITY_SENSOR_ID, true) }];
-        if (mode === "asymmetric") {
-          const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
-            nextState.smartTrackingLiftDistance,
-            nextState.smartTrackingLandingDistance
-          );
+        if (officialSmartTracking.isAsymmetric) {
           seq.push({
             packet: ProtocolCodec.commands.setProximitySensorLiftSetting(
               tx,
               OFFICIAL_PROXIMITY_CLASS_ID,
               OFFICIAL_PROXIMITY_SENSOR_ID,
               0x04,
-              dist.lift - 1
+              officialSmartTracking.trackingDistance - 1
             ),
           });
           seq.push({
@@ -1665,7 +1716,7 @@
               tx,
               OFFICIAL_PROXIMITY_CLASS_ID,
               OFFICIAL_PROXIMITY_SENSOR_ID,
-              [0x00, dist.lift - 1, dist.landing - 1]
+              [officialSmartTracking.liftOffDistance - 1, officialSmartTracking.landingDistance - 1]
             ),
           });
         } else {
@@ -1675,7 +1726,7 @@
               OFFICIAL_PROXIMITY_CLASS_ID,
               OFFICIAL_PROXIMITY_SENSOR_ID,
               0x01,
-              nextState.smartTrackingLevel
+              officialSmartTracking.trackingDistance - 1
             ),
           });
         }
@@ -1858,39 +1909,28 @@
         next.sensorAngle = TRANSFORMERS.normalizeSensorAngle(next.sensorAngle ?? 0);
       }
 
-      if (Object.prototype.hasOwnProperty.call(patch, "smartTrackingMode")) {
-        next.smartTrackingMode = TRANSFORMERS.normalizeSmartTrackingMode(patch.smartTrackingMode);
-      } else {
-        next.smartTrackingMode = TRANSFORMERS.normalizeSmartTrackingMode(next.smartTrackingMode ?? "symmetric");
-      }
-
-      if (Object.prototype.hasOwnProperty.call(patch, "smartTrackingLevel")) {
-        next.smartTrackingLevel = TRANSFORMERS.normalizeSmartTrackingLevel(patch.smartTrackingLevel);
-      } else {
-        next.smartTrackingLevel = TRANSFORMERS.normalizeSmartTrackingLevel(next.smartTrackingLevel ?? 2);
-      }
-
+      const hasSmartTrackingMode = Object.prototype.hasOwnProperty.call(patch, "smartTrackingMode");
+      const hasSmartTrackingLevel = Object.prototype.hasOwnProperty.call(patch, "smartTrackingLevel");
       const hasLift = Object.prototype.hasOwnProperty.call(patch, "smartTrackingLiftDistance");
       const hasLanding = Object.prototype.hasOwnProperty.call(patch, "smartTrackingLandingDistance");
-      if (hasLift || hasLanding) {
-        if (!Object.prototype.hasOwnProperty.call(patch, "smartTrackingMode")) {
-          next.smartTrackingMode = "asymmetric";
+      if (hasSmartTrackingMode || hasSmartTrackingLevel || hasLift || hasLanding) {
+        const smartTrackingSeed = {
+          smartTrackingMode: hasSmartTrackingMode ? patch.smartTrackingMode : next.smartTrackingMode,
+          smartTrackingLevel: hasSmartTrackingLevel ? patch.smartTrackingLevel : next.smartTrackingLevel,
+          smartTrackingLiftDistance: hasLift ? patch.smartTrackingLiftDistance : next.smartTrackingLiftDistance,
+          smartTrackingLandingDistance: hasLanding ? patch.smartTrackingLandingDistance : next.smartTrackingLandingDistance,
+        };
+        if ((hasLift || hasLanding) && !hasSmartTrackingMode) {
+          smartTrackingSeed.smartTrackingMode = "asymmetric";
         }
-        if (next.smartTrackingMode === "asymmetric") {
-          const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
-            hasLift ? patch.smartTrackingLiftDistance : (next.smartTrackingLiftDistance ?? 2),
-            hasLanding ? patch.smartTrackingLandingDistance : (next.smartTrackingLandingDistance ?? 1)
-          );
-          next.smartTrackingLiftDistance = dist.lift;
-          next.smartTrackingLandingDistance = dist.landing;
-        }
-      } else {
-        const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
-          next.smartTrackingLiftDistance ?? 2,
-          next.smartTrackingLandingDistance ?? 1
-        );
-        next.smartTrackingLiftDistance = dist.lift;
-        next.smartTrackingLandingDistance = dist.landing;
+        Object.assign(next, normalizePublicSmartTrackingState(smartTrackingSeed));
+      } else if (
+        next.smartTrackingMode != null
+        || next.smartTrackingLevel != null
+        || next.smartTrackingLiftDistance != null
+        || next.smartTrackingLandingDistance != null
+      ) {
+        Object.assign(next, normalizePublicSmartTrackingState(next));
       }
 
       return next;
@@ -1980,16 +2020,6 @@
     4: "前进",
     5: "后退",
     6: "DPI循环",
-  });
-
-  // REP4 source codes captured from Synapse write packets.
-  const REP4_SOURCE_CODE_BY_BUTTON_ID = Object.freeze({
-    1: 0x0001, // 推断：左键源编码，与其他按键编码模式一致
-    2: 0x0002,
-    3: 0x0003,
-    4: 0x0005, // 前进键
-    5: 0x0004, // 后退键
-    6: 0x0060, // DPI 键
   });
 
   const KEYMAP_ACTIONS = (() => {
@@ -2150,132 +2180,11 @@
     return out;
   })();
 
-  const REP4_MOUSE_ACTION_BY_LABEL = Object.freeze({
-    左键: [0x01, 0x01, 0x01, 0x00],
-    右键: [0x01, 0x01, 0x02, 0x00],
-    中键: [0x01, 0x01, 0x03, 0x00],
-    后退: [0x01, 0x01, 0x04, 0x00],
-    前进: [0x01, 0x01, 0x05, 0x00],
-    左键双击: [0x0b, 0x01, 0x01, 0x00],
-    向上滚动: [0x01, 0x01, 0x09, 0x00],
-    向下滚动: [0x01, 0x01, 0x0a, 0x00],
-    禁止按键: [0x01, 0x01, 0x00, 0x00],
-    DPI循环: [0x06, 0x01, 0x06, 0x00],
-  });
-
-  // Moderate inference: keep DPI family writable as 06 01 X to match capture style.
-  const REP4_DPI_ACTION_BY_LABEL = Object.freeze({
-    dpiUp: [0x06, 0x01, 0x01, 0x00],
-    dpiDown: [0x06, 0x01, 0x02, 0x00],
-    tiltLeft: [0x06, 0x01, 0x03, 0x00],
-    tiltRight: [0x06, 0x01, 0x04, 0x00],
-    profile: [0x06, 0x01, 0x05, 0x00],
-    sniper: [0x06, 0x01, 0x06, 0x00],
-  });
-
-  const REP4_MEDIA_ACTION_BY_LABEL = Object.freeze({
-    // Captured media write path uses [0a, 02, 00, consumer_hid].
-    音量加: [0x0a, 0x02, 0x00, 0xe9],
-    音量减: [0x0a, 0x02, 0x00, 0xea],
-    静音: [0x0a, 0x02, 0x00, 0xe2],
-    上一曲: [0x0a, 0x02, 0x00, 0xb6],
-    // Inferred from standard consumer HID set; verify with capture if needed.
-    下一曲: [0x0a, 0x02, 0x00, 0xb5],
-    "播放/暂停": [0x0a, 0x02, 0x00, 0xcd],
-    计算器: [0x0a, 0x02, 0x01, 0x92],    
-    我的电脑: [0x0a, 0x02, 0x01, 0x94],   
-    浏览器: [0x0a, 0x02, 0x02, 0x23],     
-    邮件: [0x0a, 0x02, 0x01, 0x8a],       
-    媒体播放器: [0x0a, 0x02, 0x01, 0x83], 
-    停止播放: [0x0a, 0x02, 0x00, 0xb7],   
-    浏览器后退: [0x0a, 0x02, 0x02, 0x24], 
-    浏览器前进: [0x0a, 0x02, 0x02, 0x25], 
-    刷新页面: [0x0a, 0x02, 0x02, 0x27],   
-    打开收藏夹: [0x0a, 0x02, 0x02, 0x2a], 
-    系统搜索: [0x0a, 0x02, 0x02, 0x21],   
-  });
-
   function normalizeActionLabel(label) {
     const raw = String(label || "").trim();
     if (!raw) return "";
     return raw;
   }
-
-  function resolveRep4ActionFromLabel(label) {
-    const canonical = normalizeActionLabel(label);
-    if (!canonical) return null;
-    const hit = (
-      REP4_MOUSE_ACTION_BY_LABEL[canonical]
-      || REP4_DPI_ACTION_BY_LABEL[canonical]
-      || REP4_MEDIA_ACTION_BY_LABEL[canonical]
-    );
-    if (hit) return hit.slice(0, 4).map((x) => clampU8(x));
-
-    const action = LABEL_TO_PROTOCOL_ACTION[canonical];
-    if (action && clampU8(action.funckey) === 0x02) {
-      const packed = clampInt(action.keycode, 0, 0xffff);
-      return [0x02, 0x02, (packed >> 8) & 0xff, packed & 0xff];
-    }
-    return null;
-  }
-
-  function resolveRep4ActionFromObject(raw) {
-    if (!isObject(raw)) return null;
-    const explicitLabel = String(raw.label ?? raw.source ?? "").trim();
-    if (explicitLabel) {
-      const byLabel = resolveRep4ActionFromLabel(explicitLabel);
-      if (byLabel) return byLabel;
-    }
-    const fk = clampU8(raw.funckey ?? raw.func ?? 0);
-    const kc = clampInt(raw.keycode ?? raw.code ?? 0, 0, 0xffff);
-    if (fk === 0x02) {
-      return [0x02, 0x02, (kc >> 8) & 0xff, kc & 0xff];
-    }
-    const label = FUNCKEY_KEYCODE_TO_LABEL.get(`${fk}:${kc}`);
-    return label ? resolveRep4ActionFromLabel(label) : null;
-  }
-
-  const REP4_WRITABLE_LABELS = Object.freeze(
-    (() => {
-      const labels = new Set([
-        ...Object.keys(REP4_MOUSE_ACTION_BY_LABEL),
-        ...Object.keys(REP4_DPI_ACTION_BY_LABEL),
-        ...Object.keys(REP4_MEDIA_ACTION_BY_LABEL),
-      ]);
-      for (const [label, action] of Object.entries(KEYMAP_ACTIONS)) {
-        if (clampU8(action?.funckey) === 0x02) {
-          labels.add(label);
-        }
-      }
-      return labels;
-    })()
-  );
-
-  const BUTTON_ID_BY_REP4_SOURCE_CODE = (() => {
-    const out = new Map();
-    for (const [btnIdRaw, sourceCode] of Object.entries(REP4_SOURCE_CODE_BY_BUTTON_ID)) {
-      const btnId = clampInt(btnIdRaw, 1, 6);
-      out.set(clampU16(sourceCode), btnId);
-    }
-    return out;
-  })();
-
-  function quadletKey(a0, a1, a2, a3) {
-    return `${clampU8(a0)}:${clampU8(a1)}:${clampU8(a2)}:${clampU8(a3)}`;
-  }
-
-  const REP4_LABEL_BY_ACTION_QUADLET = (() => {
-    const out = new Map();
-    const add = (label, quadlet) => {
-      if (!label || !Array.isArray(quadlet) || quadlet.length < 4) return;
-      const key = quadletKey(quadlet[0], quadlet[1], quadlet[2], quadlet[3]);
-      if (!out.has(key)) out.set(key, label);
-    };
-    for (const [label, quadlet] of Object.entries(REP4_MOUSE_ACTION_BY_LABEL)) add(label, quadlet);
-    for (const [label, quadlet] of Object.entries(REP4_DPI_ACTION_BY_LABEL)) add(label, quadlet);
-    for (const [label, quadlet] of Object.entries(REP4_MEDIA_ACTION_BY_LABEL)) add(label, quadlet);
-    return out;
-  })();
 
   function normalizeButtonMappingEntry(entry, fallbackSource = "") {
     const raw = isObject(entry) ? entry : {};
@@ -2296,129 +2205,9 @@
     );
   }
 
-  const UNKNOWN_REP4_READ_SOURCE = "未知(回包异常)";
-  const REP4_READ_MAX_ATTEMPTS = 7;
-  const REP4_READ_STABLE_HITS_REQUIRED = 2;
-  const REP4_READ_RETRY_DELAY_MS = 20;
-  const RETRYABLE_REP4_READ_ERROR_CODES = new Set([
-    "REP4_READ_EMPTY",
-    "REP4_READ_INVALID",
-    "REP4_SOURCE_ECHO_MISMATCH",
-    "REP4_READ_UNKNOWN_ACTION",
-    "REP4_READ_UNSTABLE",
-  ]);
-
-  function buildUnknownRep4Entry(sourceText = UNKNOWN_REP4_READ_SOURCE) {
-    return {
-      source: String(sourceText || UNKNOWN_REP4_READ_SOURCE),
-      funckey: 0x00,
-      keycode: 0x0000,
-    };
-  }
-
   function hexU8(v) {
     return clampU8(v).toString(16).padStart(2, "0").toUpperCase();
   }
-
-  function buildUnknownRep4QuadletEntry(quadlet) {
-    const a0 = Array.isArray(quadlet) ? clampU8(quadlet[0]) : 0x00;
-    const a1 = Array.isArray(quadlet) ? clampU8(quadlet[1]) : 0x00;
-    const a2 = Array.isArray(quadlet) ? clampU8(quadlet[2]) : 0x00;
-    const a3 = Array.isArray(quadlet) ? clampU8(quadlet[3]) : 0x00;
-    return buildUnknownRep4Entry(`未知(REP4:${hexU8(a0)}-${hexU8(a1)}-${hexU8(a2)}-${hexU8(a3)})`);
-  }
-
-  function resolveActionFromRep4Quadlet(_btnId, quadlet) {
-    if (!Array.isArray(quadlet) || quadlet.length < 4) return buildUnknownRep4QuadletEntry(quadlet);
-
-    const a0 = clampU8(quadlet[0]);
-    const a1 = clampU8(quadlet[1]);
-    const a2 = clampU8(quadlet[2]);
-    const a3 = clampU8(quadlet[3]);
-
-    if (a0 === 0x02 && a1 === 0x02) {
-      const keycode = ((a2 << 8) | a3) & 0xffff;
-      const label = FUNCKEY_KEYCODE_TO_LABEL.get(`2:${keycode}`);
-      if (!label) return buildUnknownRep4QuadletEntry(quadlet);
-      return {
-        source: label,
-        funckey: 0x02,
-        keycode,
-      };
-    }
-
-    const label = REP4_LABEL_BY_ACTION_QUADLET.get(quadletKey(a0, a1, a2, a3));
-    if (!label) return buildUnknownRep4QuadletEntry(quadlet);
-
-    const action = LABEL_TO_PROTOCOL_ACTION[label];
-    if (!action) return buildUnknownRep4QuadletEntry(quadlet);
-
-    return {
-      source: label,
-      funckey: clampU8(action.funckey),
-      keycode: clampInt(action.keycode, 0, 0xffff),
-    };
-  }
-
-  function extractRep4ReadQuadlet(btnId, sourceCode, res) {
-    const expectedSourceCode = clampU16(sourceCode);
-    const expectedBtn = BUTTON_ID_BY_REP4_SOURCE_CODE.get(expectedSourceCode);
-    const b = clampInt(Number.isFinite(btnId) ? btnId : (expectedBtn ?? 1), 1, 6);
-    const args = res?.arguments;
-    if (!(args instanceof Uint8Array) || args.length < 7) {
-      throw new ProtocolError("REP4 mapping response is invalid", "REP4_READ_INVALID", {
-        btnId: b,
-        expectedSourceCode,
-        argsLength: args instanceof Uint8Array ? args.length : -1,
-      });
-    }
-    if (clampU8(args[0]) !== 0x01) {
-      throw new ProtocolError("REP4 mapping response header is invalid", "REP4_READ_INVALID", {
-        btnId: b,
-        expectedSourceCode,
-        header: clampU8(args[0]),
-      });
-    }
-
-    const sourceEcho = ((clampU8(args[2]) << 8) | clampU8(args[1])) & 0xffff;
-    // Strict source echo validation avoids applying another key's response
-    // to the current slot during connect-time jitter.
-    if (sourceEcho !== expectedSourceCode) {
-      throw new ProtocolError("REP4 source echo mismatch", "REP4_SOURCE_ECHO_MISMATCH", {
-        btnId: b,
-        expectedSourceCode,
-        sourceEcho,
-      });
-    }
-
-    return [clampU8(args[3]), clampU8(args[4]), clampU8(args[5]), clampU8(args[6])];
-  }
-
-  function isKnownRep4Quadlet(quadlet) {
-    if (!Array.isArray(quadlet) || quadlet.length < 4) return false;
-    const a0 = clampU8(quadlet[0]);
-    const a1 = clampU8(quadlet[1]);
-    const a2 = clampU8(quadlet[2]);
-    const a3 = clampU8(quadlet[3]);
-
-    if (a0 === 0x02 && a1 === 0x02) {
-      const keycode = ((a2 << 8) | a3) & 0xffff;
-      return FUNCKEY_KEYCODE_TO_LABEL.has(`2:${keycode}`);
-    }
-
-    return REP4_LABEL_BY_ACTION_QUADLET.has(quadletKey(a0, a1, a2, a3));
-  }
-
-  function isRetryableRep4ReadError(err) {
-    return RETRYABLE_REP4_READ_ERROR_CODES.has(String(err?.code || ""));
-  }
-
-  // Safety latch:
-  // The current local Razer button-mapping protocol path is not aligned with the
-  // official V4 OBM packet model yet. Until that path is rebuilt against the
-  // official bundle end-to-end, do not send button-mapping traffic from this driver.
-  const RAZER_BUTTON_MAPPING_DISABLED_REASON =
-    "Razer button-mapping protocol is temporarily disabled until the official packet model is fully verified";
 
   const OFFICIAL_OBM_MOUSE_ASSIGNMENT_BY_PUBLIC_ACTION = Object.freeze({
     "1:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.LEFT_BUTTON] },
@@ -2430,7 +2219,7 @@
     "1:9": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.SCROLL_UP] },
     "1:10": { functionId: OFFICIAL_OBM_FUNCTION_ID.BUTTON_CODE, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.SCROLL_DOWN] },
     "7:0": { functionId: OFFICIAL_OBM_FUNCTION_ID.OFF, dataSize: 0, dataArray: [] },
-    "32:5": { functionId: OFFICIAL_OBM_FUNCTION_ID.DPI, dataSize: 1, dataArray: [OFFICIAL_OBM_BUTTON_TARGET.DPI_CYCLE_UP] },
+    "32:5": { functionId: OFFICIAL_OBM_FUNCTION_ID.DPI, dataSize: 1, dataArray: [OFFICIAL_OBM_DPI_ACTION.DPI_CYCLE_UP] },
   });
 
   const OFFICIAL_OBM_MEDIA_USAGE_BY_PUBLIC_ACTION = Object.freeze({
@@ -2569,22 +2358,22 @@
   }
 
   function parseOfficialObmAssignment(response, mode = OFFICIAL_BUTTON_MODE.NORMAL) {
-    const args = response?.arguments instanceof Uint8Array ? response.arguments : new Uint8Array();
-    const isHyperShift = clampU8(mode) === OFFICIAL_BUTTON_MODE.HYPERSHIFT;
-    const functionOffset = isHyperShift ? 3 : 2;
-    const sizeOffset = isHyperShift ? 5 : 4;
-    const dataOffsets = isHyperShift ? [7, 9, 11, 13, 15] : [6, 8, 10, 12, 14];
-    const dataArray = new Uint8Array(5);
-    for (let i = 0; i < dataOffsets.length; i++) {
-      dataArray[i] = clampU8(args[dataOffsets[i]] ?? 0x00);
+    const args = response?.argumentsData instanceof Uint8Array && response.argumentsData.length
+      ? response.argumentsData
+      : response?.arguments instanceof Uint8Array
+        ? response.arguments
+        : new Uint8Array();
+    if (!args.length) {
+      throw new ProtocolError("OBM button assignment response is empty", "OBM_READ_FAILED");
     }
+    const parsedMode = clampU8(args[2] ?? mode);
     return {
       profileId: clampU8(args[0] ?? OFFICIAL_MOUSE_PROFILE_ID),
       buttonId: clampU8(args[1] ?? 0x00),
-      mode: isHyperShift ? OFFICIAL_BUTTON_MODE.HYPERSHIFT : OFFICIAL_BUTTON_MODE.NORMAL,
-      functionId: clampU8(args[functionOffset] ?? 0x00),
-      dataSize: clampInt(args[sizeOffset] ?? 0x00, 0, 5),
-      dataArray,
+      mode: parsedMode,
+      functionId: clampU8(args[3] ?? 0x00),
+      dataSize: clampInt(args[4] ?? 0x00, 0, 5),
+      dataArray: buildOfficialObmDataArray(args.subarray(5, 10)),
     };
   }
 
@@ -2632,7 +2421,7 @@
     }
 
     if (fnId === OFFICIAL_OBM_FUNCTION_ID.DPI) {
-      if (clampU8(dataArray[0] ?? 0x00) === OFFICIAL_OBM_BUTTON_TARGET.DPI_CYCLE_UP) {
+      if (clampU8(dataArray[0] ?? 0x00) === OFFICIAL_OBM_DPI_ACTION.DPI_CYCLE_UP) {
         const source = FUNCKEY_KEYCODE_TO_LABEL.get("32:5");
         if (source) return normalizeButtonMappingEntry({ source, funckey: 0x20, keycode: 0x0005 });
       }
@@ -2795,7 +2584,6 @@
 
     _makeSessionReadCache() {
       return {
-        smartTrackingAsymmetric: false,
         dpiProfileId: OFFICIAL_MOUSE_PROFILE_ID,
         dpiStageIds: [],
       };
@@ -2822,15 +2610,6 @@
 
     _hasStaticSnapshotValue(key) {
       return String(this._cfg?.[key] || "").trim().length > 0;
-    }
-
-    _hasSmartTrackingAsymmetricCache() {
-      return !!this._sessionReadCache?.smartTrackingAsymmetric;
-    }
-
-    _markSmartTrackingAsymmetricCacheValid(valid = true) {
-      if (!this._sessionReadCache) this._resetSessionReadCache();
-      this._sessionReadCache.smartTrackingAsymmetric = !!valid;
     }
 
     _updateDpiWriteContext(profileId = OFFICIAL_MOUSE_PROFILE_ID, stageIds = []) {
@@ -3060,10 +2839,7 @@
       }
 
       if (caps.smartTracking) {
-        cfg.smartTrackingMode = "symmetric";
-        cfg.smartTrackingLevel = 2;
-        cfg.smartTrackingLiftDistance = 2;
-        cfg.smartTrackingLandingDistance = 1;
+        Object.assign(cfg, DEFAULT_RAZER_SMART_TRACKING_PUBLIC_STATE);
       }
 
       if (caps.sensorAngle) {
@@ -3173,8 +2949,6 @@
         250,
         10_000
       );
-      const useConnectButtonMappingRead = normalizedReason === "connect";
-
       this._driver.readTimeoutMs = driverReadTimeoutMs;
       this._driver.sendTimeoutMs = driverSendTimeoutMs;
 
@@ -3203,8 +2977,6 @@
           try {
             const updates = await this._readDeviceStateSnapshot({
               mode: snapshotReadMode,
-              strictButtonMappingRead: !useConnectButtonMappingRead,
-              connectButtonMappingRead: useConnectButtonMappingRead,
             });
             if (updates && Object.keys(updates).length) {
               this._cfg = Object.assign({}, this._cfg, updates);
@@ -3321,7 +3093,6 @@
         await this._ensureOpen();
         const updates = await this._readDeviceStateSnapshot({
           mode: SNAPSHOT_READ_MODE.REFRESH_FULL,
-          strictButtonMappingRead: false,
         });
         if (updates && Object.keys(updates).length) {
           this._cfg = Object.assign({}, this._cfg, updates);
@@ -3392,7 +3163,6 @@
             try {
               const updates = await this._readDeviceStateSnapshot({
                 mode: SNAPSHOT_READ_MODE.REFRESH_FULL,
-                strictButtonMappingRead: false,
               });
               if (updates && Object.keys(updates).length) {
                 this._cfg = Object.assign({}, this._cfg, updates);
@@ -3409,17 +3179,6 @@
             }
             throw err;
           }
-        }
-
-        if (
-          Object.prototype.hasOwnProperty.call(patch, "smartTrackingMode")
-          || Object.prototype.hasOwnProperty.call(patch, "smartTrackingLevel")
-          || Object.prototype.hasOwnProperty.call(patch, "smartTrackingLiftDistance")
-          || Object.prototype.hasOwnProperty.call(patch, "smartTrackingLandingDistance")
-        ) {
-          this._markSmartTrackingAsymmetricCacheValid(
-            TRANSFORMERS.normalizeSmartTrackingMode(nextState.smartTrackingMode) === "asymmetric"
-          );
         }
 
         this._cfg = Object.assign({}, this._cfg, nextState);
@@ -3498,8 +3257,8 @@
       return this._opQueue.enqueue(async () => {
         await this._ensureOpen();
         const slot = clampInt(btnId, 1, 6);
-        const sourceCode = REP4_SOURCE_CODE_BY_BUTTON_ID[slot];
-        if (!sourceCode) {
+        const buttonId = OFFICIAL_OBM_SLOT_TO_BUTTON_ID[slot];
+        if (!buttonId) {
           throw new ProtocolError(`Unsupported Razer button slot: ${btnId}`, "BAD_PARAM", { btnId });
         }
 
@@ -3511,10 +3270,9 @@
           });
         }
 
-        const quadlet = resolveRep4ActionFromLabel(resolved.source || resolved.label || "")
-          || resolveRep4ActionFromObject(resolved.action);
-        if (!Array.isArray(quadlet) || quadlet.length < 4) {
-          throw new ProtocolError(`Button action is not writable via existing Razer command path: ${String(resolved.label || resolved.source || "")}`, "FEATURE_UNAVAILABLE", {
+        const assignment = buildOfficialObmAssignmentFromPublicAction(resolved.action);
+        if (!assignment) {
+          throw new ProtocolError(`Button action is not writable via official Razer OBM path: ${String(resolved.label || resolved.source || "")}`, "FEATURE_UNAVAILABLE", {
             btnId: slot,
             label: resolved.label || resolved.source || "",
           });
@@ -3522,14 +3280,28 @@
 
         const tx = txForField(this._pid(), "buttonMappings");
         await this._driver.runSequence([{
-          packet: ProtocolCodec.commands.setButtonMappingRep4(
+          packet: ProtocolCodec.commands.setSingleButtonAssignment(
             tx,
-            sourceCode,
-            quadlet
+            OFFICIAL_MOUSE_PROFILE_ID,
+            buttonId,
+            OFFICIAL_BUTTON_MODE.NORMAL,
+            assignment.functionId,
+            assignment.dataSize,
+            assignment.dataArray
           ),
+          waitMs: RAZER_OBM_BUTTON_IO_WAIT_MS,
         }]);
 
-        const verified = await this._readSingleRep4ButtonMapping(slot, { strictStability: true });
+        let verified = null;
+        try {
+          verified = await this._readSingleOfficialObmButtonMapping(slot);
+        } catch (err) {
+          throw new ProtocolError("Button mapping verify readback failed", "VERIFY_FAILED", {
+            btnId: slot,
+            expected: normalizeButtonMappingEntry(resolved.action, resolved.source || resolved.label || ""),
+            cause: err,
+          });
+        }
         if (!isSameButtonAction(verified, resolved.action)) {
           throw new ProtocolError("Button mapping verify mismatch", "VERIFY_FAILED", {
             btnId: slot,
@@ -3538,11 +3310,12 @@
           });
         }
 
+        const defaultMappings = buildDefaultRazerButtonMappings();
         const nextMappings = Array.isArray(this._cfg?.buttonMappings)
           ? this._cfg.buttonMappings.slice(0, 6)
-          : buildDefaultRazerButtonMappings();
+          : defaultMappings.slice(0, 6);
         while (nextMappings.length < 6) {
-          nextMappings.push(buildDefaultRazerButtonMappings()[nextMappings.length] || buildUnknownRep4Entry());
+          nextMappings.push(defaultMappings[nextMappings.length] || normalizeButtonMappingEntry());
         }
         nextMappings[slot - 1] = verified;
         this._cfg = Object.assign({}, this._cfg, { buttonMappings: nextMappings });
@@ -3551,101 +3324,74 @@
     }
 
     async _safeQuery(packet, fallback = null, opts = {}) {
+      const {
+        swallowPermissionPathError = true,
+        swallowCodes = ["DEVICE_COMMAND_NOT_SUPPORTED"],
+        ...sendOpts
+      } = opts || {};
+      const allowedCodes = new Set(
+        Array.isArray(swallowCodes)
+          ? swallowCodes.map((code) => String(code || ""))
+          : []
+      );
       try {
-        return await this._driver.sendAndWait(packet, opts);
+        return await this._driver.sendAndWait(packet, sendOpts);
       } catch (err) {
-        const name = String(err?.name || "");
-        const msg = String(err?.message || "").toLowerCase();
-        if (
-          name === "NotAllowedError"
-          || msg.includes("notallowederror")
-          || msg.includes("failed to write the feature report")
-          || msg.includes("failed to receive the feature report")
-          || msg.includes("failed to read the feature report")
-        ) {
+        if (isPermissionPathError(err)) {
+          if (swallowPermissionPathError) return fallback;
           throw err;
         }
-        return fallback;
+        if (allowedCodes.has(String(err?.code || ""))) {
+          return fallback;
+        }
+        throw err;
       }
     }
 
-    async _readSingleRep4ButtonMapping(btnId, { strictStability = false } = {}) {
+    async _readSingleOfficialObmButtonMapping(btnId) {
       const slot = clampInt(btnId, 1, 6);
-      const sourceCode = REP4_SOURCE_CODE_BY_BUTTON_ID[slot];
-      if (!sourceCode) {
+      const buttonId = OFFICIAL_OBM_SLOT_TO_BUTTON_ID[slot];
+      if (!buttonId) {
         throw new ProtocolError(`Unsupported Razer button slot: ${btnId}`, "BAD_PARAM", { btnId });
       }
-      const tx = txForField(this._pid(), "buttonMappings");
-      const requiredStableHits = strictStability ? REP4_READ_STABLE_HITS_REQUIRED : 1;
-      let stableHits = 0;
-      let lastQuadletKey = "";
-      let lastDecoded = null;
-      let lastRetryableErr = null;
 
-      for (let attempt = 1; attempt <= REP4_READ_MAX_ATTEMPTS; attempt++) {
+      const pid = this._pid();
+      let lastErr = null;
+      for (let attempt = 1; attempt <= RAZER_OBM_BUTTON_IO_RETRY; attempt++) {
         try {
-          const res = await this._safeQuery(
-            ProtocolCodec.commands.getButtonMappingRep4(tx, sourceCode),
-            null
+          const tx = txForField(pid, "buttonMappings");
+          const res = await this._driver.sendAndWait(
+            ProtocolCodec.commands.getSingleButtonAssignment(
+              tx,
+              OFFICIAL_MOUSE_PROFILE_ID,
+              buttonId,
+              OFFICIAL_BUTTON_MODE.NORMAL
+            ),
+            { waitMs: RAZER_OBM_BUTTON_IO_WAIT_MS }
           );
-          if (!res?.arguments) {
-            throw new ProtocolError("REP4 mapping response is empty", "REP4_READ_EMPTY", {
-              btnId: slot,
-              sourceCode,
-              attempt,
-            });
-          }
-
-          const quadlet = extractRep4ReadQuadlet(slot, sourceCode, res);
-          if (!isKnownRep4Quadlet(quadlet)) {
-            throw new ProtocolError("REP4 mapping response contains unknown action", "REP4_READ_UNKNOWN_ACTION", {
-              btnId: slot,
-              sourceCode,
-              quadlet: quadlet.slice(0),
-            });
-          }
-
-          const decoded = resolveActionFromRep4Quadlet(slot, quadlet);
-          const key = quadletKey(quadlet[0], quadlet[1], quadlet[2], quadlet[3]);
-          stableHits = key === lastQuadletKey ? stableHits + 1 : 1;
-          lastQuadletKey = key;
-          lastDecoded = decoded;
-
-          if (stableHits >= requiredStableHits) {
-            return decoded;
-          }
+          return buildPublicActionFromOfficialObmAssignment(
+            parseOfficialObmAssignment(res, OFFICIAL_BUTTON_MODE.NORMAL)
+          );
         } catch (err) {
-          if (!isRetryableRep4ReadError(err)) throw err;
-          lastRetryableErr = err;
-        }
-
-        if (attempt < REP4_READ_MAX_ATTEMPTS) {
-          await sleep(REP4_READ_RETRY_DELAY_MS);
+          lastErr = err;
+          if (attempt >= RAZER_OBM_BUTTON_IO_RETRY || !shouldRetryOfficialObmButtonIoError(err)) {
+            throw err;
+          }
+          await sleep(RAZER_OBM_BUTTON_IO_RETRY_DELAY_MS);
         }
       }
 
-      if (lastDecoded) return lastDecoded;
-      throw lastRetryableErr || new ProtocolError("REP4 mapping response is unstable", "REP4_READ_UNSTABLE", {
+      throw lastErr || new ProtocolError("OBM button mapping read failed", "OBM_READ_FAILED", {
         btnId: slot,
-        sourceCode,
+        buttonId,
       });
     }
 
-    async _readButtonMappingsSnapshot({ strictStability = false, connectFastPath = false } = {}) {
-      void strictStability;
-      void connectFastPath;
+    async _readButtonMappingsSnapshot() {
       this._ensureSupported();
-      const pid = this._pid();
       const cached = Array.isArray(this._cfg?.buttonMappings) && this._cfg.buttonMappings.length
         ? this._cfg.buttonMappings
         : buildDefaultRazerButtonMappings();
-      if (!supportsOfficialObmForPid(pid)) {
-        return Array.from({ length: 6 }, (_, index) => normalizeButtonMappingEntry(
-          cached[index],
-          DEFAULT_RAZER_BUTTON_SOURCE_BY_BUTTON[index + 1]
-        ));
-      }
-      const tx = txForField(pid, "buttonMappings");
       const out = [];
 
       for (let slot = 1; slot <= 6; slot++) {
@@ -3660,19 +3406,7 @@
         }
 
         try {
-          const res = await this._safeQuery(
-            ProtocolCodec.commands.getSingleButtonAssignment(tx, OFFICIAL_MOUSE_PROFILE_ID, buttonId),
-            null
-          );
-          if (!res?.arguments) {
-            out.push(fallback);
-            continue;
-          }
-          out.push(
-            buildPublicActionFromOfficialObmAssignment(
-              parseOfficialObmAssignment(res, OFFICIAL_BUTTON_MODE.NORMAL)
-            )
-          );
+          out.push(await this._readSingleOfficialObmButtonMapping(slot));
         } catch (err) {
           console.warn("[Razer] OBM button read failed", { slot, buttonId, err });
           out.push(fallback);
@@ -3733,7 +3467,7 @@
     }
 
     // Read the serialized runtime snapshot used by connect bootstrap and later refreshes.
-    async _readDeviceStateSnapshot({ mode = SNAPSHOT_READ_MODE.REFRESH_FULL, strictButtonMappingRead = false, connectButtonMappingRead = false } = {}) {
+    async _readDeviceStateSnapshot({ mode = SNAPSHOT_READ_MODE.REFRESH_FULL } = {}) {
       const pid = this._ensureSupported();
       const caps = this._caps();
       const tx = txForField(pid, "snapshot");
@@ -3835,7 +3569,11 @@
 
       if (caps.smartTracking) {
         const txTracking = txForField(pid, "smartTracking");
-        let smartTrackingMode = null;
+        const officialSmartTracking = Object.assign(
+          {},
+          DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL,
+          buildOfficialSmartTrackingModelFromPublicState(this._cfg)
+        );
         const liftRes = await this._safeQuery(
           ProtocolCodec.commands.getProximitySensorLiftSetting(
             txTracking,
@@ -3845,48 +3583,38 @@
         );
         if (liftRes?.arguments) {
           const modeSel = clampU8(liftRes.arguments[2] ?? 0x01);
-          smartTrackingMode = modeSel === 0x04 ? "asymmetric" : "symmetric";
-          updates.smartTrackingMode = smartTrackingMode;
-          if (smartTrackingMode === "symmetric") {
-            updates.smartTrackingLevel = TRANSFORMERS.normalizeSmartTrackingLevel(liftRes.arguments[3] ?? 0);
-            this._markSmartTrackingAsymmetricCacheValid(false);
+          officialSmartTracking.isAsymmetric = modeSel === 0x04;
+          if (liftRes.arguments[3] != null) {
+            officialSmartTracking.trackingDistance = TRANSFORMERS.smartTrackingLevelToTrackingDistance(
+              liftRes.arguments[3]
+            );
           }
         }
 
-        const shouldReadAsymmetricDistances = (
-          smartTrackingMode === "asymmetric"
-          || !this._hasSmartTrackingAsymmetricCache()
+        const distRes = await this._safeQuery(
+          ProtocolCodec.commands.getProximitySensorConfiguration(
+            txTracking,
+            OFFICIAL_PROXIMITY_CLASS_ID,
+            OFFICIAL_PROXIMITY_SENSOR_ID
+          )
         );
-        if (shouldReadAsymmetricDistances) {
-          const distRes = await this._safeQuery(
-            ProtocolCodec.commands.getProximitySensorConfiguration(
-              txTracking,
-              OFFICIAL_PROXIMITY_CLASS_ID,
-              OFFICIAL_PROXIMITY_SENSOR_ID
-            )
-          );
-          if (distRes?.arguments) {
-            const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
-              clampU8(distRes.arguments[3] ?? 0) + 1,
-              clampU8(distRes.arguments[4] ?? 0) + 1
-            );
-            updates.smartTrackingLiftDistance = dist.lift;
-            updates.smartTrackingLandingDistance = dist.landing;
-            this._markSmartTrackingAsymmetricCacheValid(true);
+        if (distRes?.arguments) {
+          if (distRes.arguments[3] != null) {
+            officialSmartTracking.liftOffDistance = clampU8(distRes.arguments[3]) + 1;
+          }
+          if (distRes.arguments[4] != null) {
+            officialSmartTracking.landingDistance = clampU8(distRes.arguments[4]) + 1;
           }
         }
+        Object.assign(updates, buildPublicSmartTrackingStateFromOfficialModel(officialSmartTracking));
       }
 
-      const buttonMappings = await this._readButtonMappingsSnapshot({
-        strictStability: !!strictButtonMappingRead,
-        connectFastPath: !!connectButtonMappingRead,
-      });
+      const buttonMappings = await this._readButtonMappingsSnapshot();
       if (Array.isArray(buttonMappings) && buttonMappings.length) {
         updates.buttonMappings = buttonMappings;
       }
 
-      // Button mapping snapshot now reads via official OBM on supported Viper PIDs only;
-      // other models stay on cached/default placeholders and do not touch device button I/O.
+      // Button mapping snapshot now uses the official OBM path for every Razer PID.
 
       return updates;
     }
@@ -3931,7 +3659,7 @@
   ProtocolApi.listKeyActionsByType = function listKeyActionsByType() {
     const buckets = Object.create(null);
     for (const [label, action] of Object.entries(KEYMAP_ACTIONS)) {
-      if (!REP4_WRITABLE_LABELS.has(label)) continue;
+      if (!OFFICIAL_OBM_WRITABLE_LABELS.has(label)) continue;
       const type = String(action?.type || "system");
       if (!buckets[type]) buckets[type] = [];
       buckets[type].push(label);
