@@ -902,6 +902,9 @@ const LOGITECH_DPI_STEP_SEGMENTS = Object.freeze([
     bhopDelay: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze(["hasBhopDelay"]), requiresCapabilities: Object.freeze([]) }),
     dynamicSensitivityComposite: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze([]), requiresCapabilities: Object.freeze([]) }),
     smartTrackingComposite: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze([]), requiresCapabilities: Object.freeze([]) }),
+    superstrikeTriggerPointComposite: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze([]), requiresCapabilities: Object.freeze(["superstrikeSwitches"]) }),
+    superstrikeRapidTriggerComposite: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze([]), requiresCapabilities: Object.freeze(["superstrikeSwitches"]) }),
+    superstrikeClickFeedbackComposite: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze([]), requiresCapabilities: Object.freeze(["superstrikeSwitches"]) }),
     lowPowerThresholdPercent: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze([]), requiresCapabilities: Object.freeze([]) }),
     hyperpollingIndicator: Object.freeze({ regions: Object.freeze(["single"]), requiresFeatures: Object.freeze([]), requiresCapabilities: Object.freeze([]) }),
   });

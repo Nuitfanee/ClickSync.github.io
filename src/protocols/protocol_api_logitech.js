@@ -519,6 +519,8 @@
   const CMDS = Object.freeze({
     SET_SETTING: 0x1a,
     APPLY: 0x0a,
+    SET_SURFACE_MODE: 0x1d,
+    APPLY_SURFACE_MODE: 0x0d,
     PROFILE_START: 0x0f,
     PROFILE_HEADER: 0x6f,
     PROFILE_CHUNK: 0x7f,
@@ -826,6 +828,27 @@
         }
       }
 
+      if (state.superstrikeSwitches != null && prof.capabilities?.superstrikeSwitches === true) {
+        const loc = layout.superstrikeSwitches;
+        const encoded = TRANSFORMERS.superstrikeSwitchesToRawBytes(state.superstrikeSwitches);
+        const setAbsoluteByte = (absoluteOffset, value) => {
+          if (!Number.isFinite(Number(absoluteOffset))) return;
+          const abs = clampInt(Number(absoluteOffset), 0, (chunks.length * 16) - 1);
+          const chunkIndex = Math.floor(abs / 16);
+          const localOffset = abs % 16;
+          const chunk = chunks[chunkIndex];
+          if (!chunk) return;
+          chunk[localOffset] = toU8(value);
+        };
+
+        setAbsoluteByte(loc?.left?.triggerPoint, encoded.left.triggerPoint);
+        setAbsoluteByte(loc?.left?.rapidTrigger, encoded.left.rapidTrigger);
+        setAbsoluteByte(loc?.left?.clickFeedback, encoded.left.clickFeedback);
+        setAbsoluteByte(loc?.right?.triggerPoint, encoded.right.triggerPoint);
+        setAbsoluteByte(loc?.right?.rapidTrigger, encoded.right.rapidTrigger);
+        setAbsoluteByte(loc?.right?.clickFeedback, encoded.right.clickFeedback);
+      }
+
       if (Array.isArray(state.buttonMappings)) {
         const entries = state.buttonMappings.slice(0);
         while (entries.length < 5) entries.push(null);
@@ -940,10 +963,20 @@
   // ============================================================
   // 3) Profile / capabilities
   // ============================================================
+  const LOGITECH_SETTINGS_MODE = Object.freeze({
+    LIGHTFORCE_SURFACE_COMBINED: "lightforceSurfaceCombined",
+    SURFACE_ONLY: "surfaceOnly",
+  });
+
   const DEFAULT_PROFILE = Object.freeze({
     id: "logitech-lightforce",
     capabilities: Object.freeze({
+      onboardMemory: true,
+      lightforceSwitch: true,
       lightforceSwitchModes: Object.freeze(["optical", "hybrid"]),
+      surfaceMode: true,
+      bhopDelay: true,
+      superstrikeSwitches: false,
       dpiSlotMax: 5,
       dpiMin: 100,
       dpiMax: 44000,
@@ -965,7 +998,62 @@
       header: PROFILE_STREAM_HEADER,
     }),
     streamLayout: Object.freeze(DEFAULT_STREAM_LAYOUT),
+    settingsMode: LOGITECH_SETTINGS_MODE.LIGHTFORCE_SURFACE_COMBINED,
   });
+
+  const SUPERSTRIKE_SWITCH_STREAM_LAYOUT = Object.freeze({
+    left: Object.freeze({
+      triggerPoint: 0x26,
+      rapidTrigger: 0x27,
+      clickFeedback: 0x28,
+    }),
+    right: Object.freeze({
+      triggerPoint: 0x29,
+      rapidTrigger: 0x2a,
+      clickFeedback: 0x2b,
+    }),
+  });
+
+  const PRO_X2_SUPERSTRIKE_PROFILE = Object.freeze({
+    ...DEFAULT_PROFILE,
+    id: "logitech-pro-x2-superstrike",
+    capabilities: Object.freeze({
+      ...DEFAULT_PROFILE.capabilities,
+      lightforceSwitch: false,
+      lightforceSwitchModes: Object.freeze([]),
+      surfaceMode: true,
+      superstrikeSwitches: true,
+    }),
+    streamLayout: Object.freeze({
+      ...DEFAULT_STREAM_LAYOUT,
+      superstrikeSwitches: SUPERSTRIKE_SWITCH_STREAM_LAYOUT,
+    }),
+    settingsMode: LOGITECH_SETTINGS_MODE.SURFACE_ONLY,
+  });
+
+  const PRO_X2_SUPERSTRIKE_CANONICAL_NAME = "PRO X2 SUPERSTRIKE";
+
+  function normalizeLogitechDeviceModelName(name) {
+    return String(name || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  }
+
+  function isProX2SuperstrikeDeviceName(name) {
+    const normalized = normalizeLogitechDeviceModelName(name);
+    if (!normalized.includes("PROX2")) return false;
+    return normalized.includes("SUPERSTRIKE") || normalized.includes("SUPERSTRI");
+  }
+
+  function canonicalizeLogitechDeviceModelName(name) {
+    const raw = String(name || "").trim();
+    if (!raw) return "";
+    if (isProX2SuperstrikeDeviceName(raw)) return PRO_X2_SUPERSTRIKE_CANONICAL_NAME;
+    return raw;
+  }
+
+  function resolveLogitechProfileForDeviceName(name, fallbackProfile = DEFAULT_PROFILE) {
+    if (isProX2SuperstrikeDeviceName(name)) return PRO_X2_SUPERSTRIKE_PROFILE;
+    return fallbackProfile || DEFAULT_PROFILE;
+  }
 
   // ============================================================
   // 4) Field normalization
@@ -1023,6 +1111,10 @@
 
     bhopMs: "bhopMs",
     bhop_ms: "bhopMs",
+
+    superstrikeSwitches: "superstrikeSwitches",
+    superstrike_switches: "superstrikeSwitches",
+    superstrike: "superstrikeSwitches",
 
     buttonMappings: "buttonMappings",
     buttonMapping: "buttonMappings",
@@ -1098,6 +1190,102 @@
     bhopCode(ms) {
       if (ms == null) return 0x0000;
       return clampInt(assertFiniteNumber(ms, "bhopMs"), 0, 0xffff);
+    },
+    superstrikeScaledValueFromRaw(raw) {
+      return Math.max(0, Math.round(toU8(raw) / 4));
+    },
+    superstrikeRapidFromRaw(raw) {
+      const v = toU8(raw);
+      return {
+        rapidTriggerDistance: Math.max(0, v >> 2),
+        rapidTriggerEnabled: (v & 0x01) === 0x01,
+      };
+    },
+    normalizeSuperstrikeSide(value, fallback = {}) {
+      const src = isObject(value) ? value : {};
+      const fb = isObject(fallback) ? fallback : {};
+      const pick = (...keys) => {
+        for (const key of keys) {
+          if (Object.prototype.hasOwnProperty.call(src, key)) return src[key];
+        }
+        return undefined;
+      };
+      const normalizeNumber = (raw, fallbackValue, min, max) => {
+        const candidate = raw != null ? Number(raw) : Number(fallbackValue);
+        const safe = Number.isFinite(candidate) ? candidate : min;
+        return clampInt(Math.round(safe), min, max);
+      };
+
+      const enabledRaw = pick("rapidTriggerEnabled", "rapidEnabled", "rapidTriggerOn");
+      return {
+        triggerPoint: normalizeNumber(
+          pick("triggerPoint", "actuationPoint", "trigger"),
+          fb.triggerPoint ?? 1,
+          1,
+          10
+        ),
+        rapidTriggerDistance: normalizeNumber(
+          pick("rapidTriggerDistance", "rapidDistance"),
+          fb.rapidTriggerDistance ?? 1,
+          0,
+          5
+        ),
+        rapidTriggerEnabled: enabledRaw == null ? !!fb.rapidTriggerEnabled : !!enabledRaw,
+        clickFeedback: normalizeNumber(
+          pick("clickFeedback", "feedback", "tactileFeedback"),
+          fb.clickFeedback ?? 0,
+          0,
+          5
+        ),
+      };
+    },
+    normalizeSuperstrikeSwitches(value, fallback = {}) {
+      const src = isObject(value) ? value : {};
+      const fb = isObject(fallback) ? fallback : {};
+      return {
+        left: TRANSFORMERS.normalizeSuperstrikeSide(src.left, fb.left),
+        right: TRANSFORMERS.normalizeSuperstrikeSide(src.right, fb.right),
+      };
+    },
+    superstrikeSwitchesFromRaw(rawData) {
+      const raw = rawData instanceof Uint8Array ? rawData : new Uint8Array(rawData || []);
+      const read = (offset) => (offset >= 0 && offset < raw.length ? raw[offset] : 0);
+      const leftRapid = TRANSFORMERS.superstrikeRapidFromRaw(read(0x27));
+      const rightRapid = TRANSFORMERS.superstrikeRapidFromRaw(read(0x2a));
+      return {
+        left: {
+          triggerPoint: TRANSFORMERS.superstrikeScaledValueFromRaw(read(0x26)),
+          rapidTriggerDistance: leftRapid.rapidTriggerDistance,
+          rapidTriggerEnabled: leftRapid.rapidTriggerEnabled,
+          clickFeedback: TRANSFORMERS.superstrikeScaledValueFromRaw(read(0x28)),
+        },
+        right: {
+          triggerPoint: TRANSFORMERS.superstrikeScaledValueFromRaw(read(0x29)),
+          rapidTriggerDistance: rightRapid.rapidTriggerDistance,
+          rapidTriggerEnabled: rightRapid.rapidTriggerEnabled,
+          clickFeedback: TRANSFORMERS.superstrikeScaledValueFromRaw(read(0x2b)),
+        },
+      };
+    },
+    superstrikeSwitchesToRawBytes(value, fallback = {}) {
+      const normalized = TRANSFORMERS.normalizeSuperstrikeSwitches(value, fallback);
+      const scaledRaw = (value, min, max) => clampInt(Math.round(value), min, max) * 4;
+      const rapidRaw = (side) => {
+        const distance = clampInt(Math.round(side.rapidTriggerDistance), 0, 5);
+        return ((distance << 2) | (side.rapidTriggerEnabled ? 0x01 : 0x00)) & 0xff;
+      };
+      return {
+        left: {
+          triggerPoint: scaledRaw(normalized.left.triggerPoint, 1, 10),
+          rapidTrigger: rapidRaw(normalized.left),
+          clickFeedback: scaledRaw(normalized.left.clickFeedback, 0, 5),
+        },
+        right: {
+          triggerPoint: scaledRaw(normalized.right.triggerPoint, 1, 10),
+          rapidTrigger: rapidRaw(normalized.right),
+          clickFeedback: scaledRaw(normalized.right.clickFeedback, 0, 5),
+        },
+      };
     },
     lodCode(val) {
       if (typeof val === "number") return clampInt(val, 0, 0xff);
@@ -1294,8 +1482,39 @@
             ? Number(context.featMap.SETTINGS)
             : DEFAULT_FEAT_MAP.SETTINGS
         );
-        const lightforceCode = TRANSFORMERS.lightforceSwitchCode(nextState.lightforceSwitch);
         const surfaceCode = TRANSFORMERS.surfaceModeCode(nextState.surfaceMode);
+        const settingsMode = String(profile?.settingsMode || LOGITECH_SETTINGS_MODE.LIGHTFORCE_SURFACE_COMBINED);
+
+        if (settingsMode === LOGITECH_SETTINGS_MODE.SURFACE_ONLY) {
+          const pre = ProtocolCodec.encode({
+            iface: "pre",
+            feat: featSettings,
+            cmd: CMDS.SET_SURFACE_MODE,
+            dataBytes: [0x00, surfaceCode, 0x00, 0x06],
+          });
+
+          const apply = ProtocolCodec.encode({
+            iface: "cmd",
+            feat: featSettings,
+            cmd: CMDS.APPLY_SURFACE_MODE,
+            dataBytes: [0x00, 0x00, 0x00],
+          });
+
+          return [
+            {
+              rid: pre.rid,
+              hex: pre.hex,
+              ack: { rid: 0x11, match: (u8) => u8.length >= 3 && u8[0] === 0x01 && u8[1] === featSettings && u8[2] === CMDS.SET_SURFACE_MODE }
+            },
+            {
+              rid: apply.rid,
+              hex: apply.hex,
+              ack: { rid: 0x11, match: (u8) => u8.length >= 3 && u8[0] === 0x01 && u8[1] === featSettings && u8[2] === CMDS.APPLY_SURFACE_MODE }
+            },
+          ];
+        }
+
+        const lightforceCode = TRANSFORMERS.lightforceSwitchCode(nextState.lightforceSwitch);
         const combinedCode = lightforceCode | surfaceCode;
 
         const isOnboard = nextState.onboardMemoryMode !== false;
@@ -1375,6 +1594,7 @@
         "dpiLods",
         "defaultDpiSlotIndex",
         "bhopMs",
+        "superstrikeSwitches",
         "buttonMappings",
         "dpiProfile",
       ],
@@ -1426,6 +1646,25 @@
       const pollingRatesWireless = Array.isArray(cap.pollingRatesWireless)
         ? cap.pollingRatesWireless
         : [125, 250, 500, 1000, 2000, 4000, 8000];
+
+      if (patch && Object.prototype.hasOwnProperty.call(patch, "lightforceSwitch") && cap.lightforceSwitch === false) {
+        throw new ProtocolError("lightforceSwitch is not supported by this Logitech model", "UNSUPPORTED_FEATURE", {
+          feature: "lightforceSwitch",
+          profileId: this.profile?.id || "",
+        });
+      }
+      if (patch && Object.prototype.hasOwnProperty.call(patch, "surfaceMode") && cap.surfaceMode === false) {
+        throw new ProtocolError("surfaceMode is not supported by this Logitech model", "UNSUPPORTED_FEATURE", {
+          feature: "surfaceMode",
+          profileId: this.profile?.id || "",
+        });
+      }
+      if (patch && Object.prototype.hasOwnProperty.call(patch, "superstrikeSwitches") && cap.superstrikeSwitches !== true) {
+        throw new ProtocolError("superstrikeSwitches is not supported by this Logitech model", "UNSUPPORTED_FEATURE", {
+          feature: "superstrikeSwitches",
+          profileId: this.profile?.id || "",
+        });
+      }
 
       if (patch && Object.prototype.hasOwnProperty.call(patch, "pollingHz")) {
         next.pollingHz = this._validatePollingHz("pollingHz", patch.pollingHz, pollingRatesWired);
@@ -1495,6 +1734,13 @@
       if ("bhopMs" in next) {
         if (next.bhopMs == null) next.bhopMs = 0;
         else next.bhopMs = clampInt(assertFiniteNumber(next.bhopMs, "bhopMs"), 0, 0xffff);
+      }
+
+      if ("superstrikeSwitches" in next) {
+        next.superstrikeSwitches = TRANSFORMERS.normalizeSuperstrikeSwitches(
+          next.superstrikeSwitches,
+          prevState?.superstrikeSwitches
+        );
       }
 
       const rawMappings = ("buttonMappings" in patch) ? patch.buttonMappings : (prevState?.buttonMappings ?? next.buttonMappings);
@@ -2075,7 +2321,8 @@
   // ============================================================
   class MouseMouseHidApi {
     constructor({ profile = DEFAULT_PROFILE } = {}) {
-      this._profile = profile;
+      this._baseProfile = profile || DEFAULT_PROFILE;
+      this._profile = this._baseProfile;
       this._planner = new CommandPlanner(this._profile);
       this._device = null;
       this._featMap = Object.assign({}, DEFAULT_FEAT_MAP);
@@ -2096,9 +2343,40 @@
       if (this._device !== nextDevice) this._deviceNameQuerySupported = null;
       this._device = nextDevice;
       this._driver.setDevice(this._device);
+      this._applyProfileForDeviceName(this._device?.productName || "");
     }
     get device() {
       return this._device;
+    }
+
+    _setActiveProfile(profile) {
+      const nextProfile = profile || this._baseProfile || DEFAULT_PROFILE;
+      const prevId = String(this._profile?.id || "");
+      const nextId = String(nextProfile?.id || "");
+      if (prevId === nextId) return false;
+
+      this._profile = nextProfile;
+      this._planner = new CommandPlanner(this._profile);
+      this._driver.defaultInterCmdDelayMs = this._profile.timings?.interCmdDelayMs ?? 12;
+
+      if (this._cfg && typeof this._cfg === "object") {
+        this._cfg.capabilities = this._capabilitiesSnapshot();
+        if (this._profile.capabilities?.superstrikeSwitches === true) {
+          this._cfg.superstrikeSwitches = TRANSFORMERS.normalizeSuperstrikeSwitches(this._cfg.superstrikeSwitches);
+        } else {
+          this._cfg.superstrikeSwitches = null;
+        }
+      }
+
+      return true;
+    }
+
+    _applyProfileForDeviceName(deviceName) {
+      return this._setActiveProfile(resolveLogitechProfileForDeviceName(deviceName, this._baseProfile));
+    }
+
+    _usesSurfaceOnlySettings() {
+      return String(this._profile?.settingsMode || "") === LOGITECH_SETTINGS_MODE.SURFACE_ONLY;
     }
 
     _capabilitiesSnapshot(cap = this._profile?.capabilities ?? {}) {
@@ -2121,6 +2399,11 @@
         pollingRates: nextWirelessRates.slice(0),
         pollingRatesWired: nextWiredRates.slice(0),
         pollingRatesWireless: nextWirelessRates.slice(0),
+        onboardMemory: cap.onboardMemory !== false,
+        lightforceSwitch: cap.lightforceSwitch !== false,
+        surfaceMode: cap.surfaceMode !== false,
+        bhopDelay: cap.bhopDelay !== false,
+        superstrikeSwitches: cap.superstrikeSwitches === true,
       };
     }
 
@@ -2587,6 +2870,10 @@
       await this.setBatchFeatures({ surfaceMode: mode });
     }
 
+    async setSuperstrikeSwitches(value) {
+      await this.setBatchFeatures({ superstrikeSwitches: value });
+    }
+
     // 切换当前激活的DPI档位 (实时生效，通过 0xCF 命令)
     async setActiveDpiSlot(slot) {
       const cap = this._profile.capabilities || {};
@@ -2815,8 +3102,7 @@
       });
     }
 
-    // [修正] 读取当前激活的板载配置槽位索引 (0-based, 0~4)
-    // GHUB抓包: OUT 10 01 0D 4B 00 00 00 -> IN 11 01 0D 4B 00 [slot_1based] 00
+    //  读取当前激活的板载配置槽位索引 (0-based, 0~4)
     async getActiveProfileSlotIndex() {
       const featProfile = this._getFeatureIndex("PROFILE");
       const packet = ProtocolCodec.encode({
@@ -2846,7 +3132,8 @@
     // 读取性能配置 (动态适配板载/软件模式)
     async getPerformanceConfig(onboardMemoryMode) {
       const modeFlag = onboardMemoryMode !== undefined ? onboardMemoryMode : this._cfg?.onboardMemoryMode;
-      const cmdApply = modeFlag !== false ? 0x0A : 0x0E;
+      const surfaceOnly = this._usesSurfaceOnlySettings();
+      const cmdApply = surfaceOnly ? CMDS.APPLY_SURFACE_MODE : (modeFlag !== false ? 0x0A : 0x0E);
       const featSettings = this._getFeatureIndex("SETTINGS");
 
       const packet = ProtocolCodec.encode({
@@ -2867,10 +3154,12 @@
         if (res && res.length > 4) {
           const configByte = res[4];
 
-          const lfCode = configByte & 0x01;
           const surfCode = configByte & 0x06;
 
-          result.lightforceSwitch = lfCode === 0x01 ? "hybrid" : "optical";
+          if (!surfaceOnly) {
+            const lfCode = configByte & 0x01;
+            result.lightforceSwitch = lfCode === 0x01 ? "hybrid" : "optical";
+          }
           if (surfCode === 0x02) result.surfaceMode = "on";
           else if (surfCode === 0x04) result.surfaceMode = "off";
           else result.surfaceMode = "auto";
@@ -2891,7 +3180,10 @@
       );
 
       if (this._deviceNameQuerySupported === false) {
-        if (fallbackName) updates.deviceName = fallbackName;
+        this._applyProfileForDeviceName(fallbackName);
+        const displayName = canonicalizeLogitechDeviceModelName(fallbackName);
+        if (displayName) updates.deviceName = displayName;
+        updates.capabilities = this.capabilities;
         return updates;
       }
 
@@ -2917,7 +3209,9 @@
           const rawNameBytes = nulPos >= 0 ? bytes.slice(0, nulPos) : bytes;
           const decodedName = rawNameBytes.map((b) => String.fromCharCode(toU8(b))).join("").trim();
           if (decodedName) {
-            updates.deviceName = decodedName;
+            this._applyProfileForDeviceName(decodedName);
+            updates.deviceName = canonicalizeLogitechDeviceModelName(decodedName);
+            updates.capabilities = this.capabilities;
             return updates;
           }
         }
@@ -2925,7 +3219,10 @@
         this._deviceNameQuerySupported = false;
       }
 
-      if (fallbackName) updates.deviceName = fallbackName;
+      this._applyProfileForDeviceName(fallbackName);
+      const displayName = canonicalizeLogitechDeviceModelName(fallbackName);
+      if (displayName) updates.deviceName = displayName;
+      updates.capabilities = this.capabilities;
       return updates;
     }
 
@@ -3101,8 +3398,8 @@
       return null;
     }
 
-    // [修正方法] 读取板载配置原始数据 (256 bytes)
-    // 抓包格式: OUT 11 01 0D 5F 00 [ProfileId] 00 [Offset] 10
+    // 读取板载配置原始数据 (256 bytes)
+
     async _readOnboardProfileRaw(profileIndex = 0) {
       const chunks = [];
       const featProfile = this._getFeatureIndex("PROFILE");
@@ -3232,9 +3529,12 @@
       // 解析 BHOP (Chunk 2, Offset 0x25)
       const bhopRaw = rawData[0x25];
       const bhopMs = bhopRaw * 10;
+      const superstrikeSwitches = this._profile?.capabilities?.superstrikeSwitches === true
+        ? TRANSFORMERS.superstrikeSwitchesFromRaw(rawData)
+        : null;
 
       // 7. 返回结果
-      return {
+      const parsed = {
         pollingWirelessHz: this._pollingHzFromCode(pollingWirelessCode),
         pollingHz: this._pollingHzFromCode(pollingWiredCode),
         dpiSlots: dpiSlotsX.slice(0),
@@ -3248,6 +3548,9 @@
         buttonMappings,
         bhopMs
       };
+
+      if (superstrikeSwitches) parsed.superstrikeSwitches = superstrikeSwitches;
+      return parsed;
     }
 
     // [新增辅助方法] 回报率代码转换
@@ -3341,22 +3644,24 @@
       const group = u8[1];
       const cmd = u8[2];
       const featSettings = this._getFeatureIndex("SETTINGS");
+      const surfaceOnly = this._usesSurfaceOnlySettings();
 
       // 处理 0x0A (板载) 或 0x0E (软件) 命令响应 (Apply 后的确认)
-      if (group === featSettings && (cmd === 0x0A || cmd === 0x0E)) {
+      if (group === featSettings && (surfaceOnly ? cmd === CMDS.APPLY_SURFACE_MODE : (cmd === 0x0A || cmd === 0x0E))) {
         const configByte = u8[4];
         if (!this._cfg) return;
 
-        const lfCode = configByte & 0x01;  // 取出第 0 位
         const surfCode = configByte & 0x06; // 取出第 1,2 位
-
-        const modeLF = TRANSFORMERS.lightforceSwitchFromCode(lfCode);
         const modeSurf = TRANSFORMERS.surfaceModeFromCode(surfCode);
 
         let changed = false;
-        if (modeLF && this._cfg.lightforceSwitch !== modeLF) {
-          this._cfg.lightforceSwitch = modeLF;
-          changed = true;
+        if (!surfaceOnly) {
+          const lfCode = configByte & 0x01;  // 取出第 0 位
+          const modeLF = TRANSFORMERS.lightforceSwitchFromCode(lfCode);
+          if (modeLF && this._cfg.lightforceSwitch !== modeLF) {
+            this._cfg.lightforceSwitch = modeLF;
+            changed = true;
+          }
         }
         if (modeSurf && this._cfg.surfaceMode !== modeSurf) {
           this._cfg.surfaceMode = modeSurf;
@@ -3433,6 +3738,9 @@
 
         batteryPercent: -1,
         batteryIsCharging: false,
+        superstrikeSwitches: cap.superstrikeSwitches === true
+          ? TRANSFORMERS.normalizeSuperstrikeSwitches(null)
+          : null,
       };
     }
 

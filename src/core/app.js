@@ -766,12 +766,19 @@
     try {
       const runtimeDeviceId = normalizeRuntimeDeviceId();
       const adapter = getRuntimeAdapter(runtimeDeviceId);
+      let capabilities = null;
+      try {
+        capabilities = cfg?.capabilities || getCapabilities();
+      } catch (_) {
+        capabilities = cfg?.capabilities || null;
+      }
       return window.DeviceUI?.applyVariant?.({
         deviceId: runtimeDeviceId,
         adapter,
         root: document,
         deviceName: String(deviceName || cfg?.deviceName || "").trim(),
         keymapOnly: !!keymapOnly,
+        capabilities,
       });
     } catch (err) {
       console.warn("[variant] apply failed", err);
@@ -4239,6 +4246,402 @@ function lockEl(el) {
     };
   }
 
+  const DEFAULT_SUPERSTRIKE_MODE = "symmetric";
+  const SUPERSTRIKE_COMPOSITES = Object.freeze([
+    Object.freeze({
+      item: "superstrikeTriggerPointComposite",
+      field: "triggerPoint",
+      range: Object.freeze({ min: 1, max: 10, step: 1 }),
+    }),
+    Object.freeze({
+      item: "superstrikeRapidTriggerComposite",
+      field: "rapidTrigger",
+      range: Object.freeze({ min: 0, max: 5, step: 1 }),
+    }),
+    Object.freeze({
+      item: "superstrikeClickFeedbackComposite",
+      field: "clickFeedback",
+      range: Object.freeze({ min: 0, max: 5, step: 1 }),
+    }),
+  ]);
+  const __superstrikeCompositeModes = {
+    triggerPoint: DEFAULT_SUPERSTRIKE_MODE,
+    rapidTrigger: DEFAULT_SUPERSTRIKE_MODE,
+    clickFeedback: DEFAULT_SUPERSTRIKE_MODE,
+  };
+  // Mode is an editor view state, not a device value; infer it once, then preserve user choice.
+  const __superstrikeCompositeModeInitialized = {
+    triggerPoint: false,
+    rapidTrigger: false,
+    clickFeedback: false,
+  };
+  const __superstrikeCompositeModeTouched = {
+    triggerPoint: false,
+    rapidTrigger: false,
+    clickFeedback: false,
+  };
+  let __superstrikeUiState = null;
+
+  function __resetSuperstrikeCompositeState() {
+    SUPERSTRIKE_COMPOSITES.forEach((meta) => {
+      if (!meta?.field) return;
+      __superstrikeCompositeModes[meta.field] = DEFAULT_SUPERSTRIKE_MODE;
+      __superstrikeCompositeModeInitialized[meta.field] = false;
+      __superstrikeCompositeModeTouched[meta.field] = false;
+    });
+    __superstrikeUiState = null;
+  }
+
+  function __isObjectRecord(value) {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function __normalizeSuperstrikeMode(rawValue) {
+    const mode = String(rawValue ?? DEFAULT_SUPERSTRIKE_MODE).trim().toLowerCase();
+    if (mode === "asymmetric" || mode === "asym") return "asymmetric";
+    return DEFAULT_SUPERSTRIKE_MODE;
+  }
+
+  function __inferSuperstrikeModeFromValues(leftValue, rightValue) {
+    return leftValue === rightValue ? "symmetric" : "asymmetric";
+  }
+
+  function __shouldInferSuperstrikeMode(field) {
+    return !__superstrikeCompositeModeTouched[field] && !__superstrikeCompositeModeInitialized[field];
+  }
+
+  function __setSuperstrikeCompositeMode(field, mode, { touched = false } = {}) {
+    if (!field) return;
+    __superstrikeCompositeModes[field] = __normalizeSuperstrikeMode(mode);
+    __superstrikeCompositeModeInitialized[field] = true;
+    if (touched) __superstrikeCompositeModeTouched[field] = true;
+  }
+
+  function __getSuperstrikeFieldConfig(field) {
+    return SUPERSTRIKE_COMPOSITES.find((item) => item.field === field) || null;
+  }
+
+  function __getSuperstrikeFieldRange(field) {
+    const meta = __getSuperstrikeFieldConfig(field);
+    const defaults = meta?.range || { min: 0, max: 5, step: 1 };
+    const raw = adapter?.ranges?.superstrikeSwitches?.[field];
+    const source = __isObjectRecord(raw) ? raw : {};
+    const min = Number(source.min);
+    const max = Number(source.max);
+    const step = Number(source.step);
+    return {
+      min: Number.isFinite(min) ? min : defaults.min,
+      max: Number.isFinite(max) ? max : defaults.max,
+      step: Number.isFinite(step) && step > 0 ? step : defaults.step,
+    };
+  }
+
+  function __clampSuperstrikeValue(field, rawValue, fallback = 0) {
+    const range = __getSuperstrikeFieldRange(field);
+    const raw = Number(rawValue);
+    const fallbackRaw = Number(fallback);
+    const value = Number.isFinite(raw) ? raw : (Number.isFinite(fallbackRaw) ? fallbackRaw : range.min);
+    return Math.max(range.min, Math.min(range.max, Math.round(value)));
+  }
+
+  function __defaultSuperstrikeSide() {
+    return {
+      triggerPoint: 1,
+      rapidTriggerDistance: 1,
+      rapidTriggerEnabled: false,
+      clickFeedback: 0,
+    };
+  }
+
+  function __defaultSuperstrikeSwitches() {
+    return {
+      left: __defaultSuperstrikeSide(),
+      right: __defaultSuperstrikeSide(),
+    };
+  }
+
+  function __pickSuperstrikeSideValue(src, keys) {
+    if (!__isObjectRecord(src)) return undefined;
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(src, key)) return src[key];
+    }
+    return undefined;
+  }
+
+  function __normalizeSuperstrikeSide(value, fallback = null) {
+    const src = __isObjectRecord(value) ? value : {};
+    const fb = __isObjectRecord(fallback) ? fallback : __defaultSuperstrikeSide();
+    const rapidEnabledRaw = __pickSuperstrikeSideValue(src, [
+      "rapidTriggerEnabled",
+      "rapidEnabled",
+      "rapidTriggerOn",
+    ]);
+    const rapidDistanceRaw = __pickSuperstrikeSideValue(src, [
+      "rapidTriggerDistance",
+      "rapidDistance",
+    ]);
+    return {
+      triggerPoint: __clampSuperstrikeValue(
+        "triggerPoint",
+        __pickSuperstrikeSideValue(src, ["triggerPoint", "actuationPoint", "trigger"]),
+        fb.triggerPoint ?? 1
+      ),
+      rapidTriggerDistance: __clampSuperstrikeValue(
+        "rapidTrigger",
+        rapidDistanceRaw,
+        fb.rapidTriggerDistance ?? 1
+      ),
+      rapidTriggerEnabled: rapidEnabledRaw == null ? !!fb.rapidTriggerEnabled : !!rapidEnabledRaw,
+      clickFeedback: __clampSuperstrikeValue(
+        "clickFeedback",
+        __pickSuperstrikeSideValue(src, ["clickFeedback", "feedback", "tactileFeedback"]),
+        fb.clickFeedback ?? 0
+      ),
+    };
+  }
+
+  function __normalizeSuperstrikeSwitches(value, fallback = null) {
+    const src = __isObjectRecord(value) ? value : {};
+    const fb = __isObjectRecord(fallback) ? fallback : __defaultSuperstrikeSwitches();
+    return {
+      left: __normalizeSuperstrikeSide(src.left, fb.left),
+      right: __normalizeSuperstrikeSide(src.right, fb.right),
+    };
+  }
+
+  function __superstrikeUiValueFromSide(field, sideValue) {
+    const side = __normalizeSuperstrikeSide(sideValue);
+    if (field === "rapidTrigger") {
+      if (!side.rapidTriggerEnabled) return 0;
+      return Math.max(1, __clampSuperstrikeValue("rapidTrigger", side.rapidTriggerDistance, 1));
+    }
+    if (field === "triggerPoint") return __clampSuperstrikeValue("triggerPoint", side.triggerPoint, 1);
+    if (field === "clickFeedback") return __clampSuperstrikeValue("clickFeedback", side.clickFeedback, 0);
+    return 0;
+  }
+
+  function __applySuperstrikeUiValueToSide(field, rawUiValue, baseSide) {
+    const side = __normalizeSuperstrikeSide(baseSide);
+    const uiValue = __clampSuperstrikeValue(field, rawUiValue, field === "triggerPoint" ? 1 : 0);
+    if (field === "triggerPoint") {
+      side.triggerPoint = uiValue;
+      return side;
+    }
+    if (field === "clickFeedback") {
+      side.clickFeedback = uiValue;
+      return side;
+    }
+    if (field === "rapidTrigger") {
+      if (uiValue <= 0) {
+        side.rapidTriggerEnabled = false;
+        side.rapidTriggerDistance = __clampSuperstrikeValue(
+          "rapidTrigger",
+          side.rapidTriggerDistance,
+          1
+        );
+      } else {
+        side.rapidTriggerEnabled = true;
+        side.rapidTriggerDistance = uiValue;
+      }
+    }
+    return side;
+  }
+
+  function __buildSuperstrikeSwitchesFromComposite(field, role, value) {
+    const base = __normalizeSuperstrikeSwitches(__superstrikeUiState);
+    const next = __normalizeSuperstrikeSwitches(base);
+    const normalizedRole = String(role || "").trim().toLowerCase();
+    if (normalizedRole === "symmetric") {
+      next.left = __applySuperstrikeUiValueToSide(field, value, base.left);
+      next.right = __applySuperstrikeUiValueToSide(field, value, base.right);
+      return next;
+    }
+    if (normalizedRole === "right") {
+      next.right = __applySuperstrikeUiValueToSide(field, value, base.right);
+      return next;
+    }
+    next.left = __applySuperstrikeUiValueToSide(field, value, base.left);
+    return next;
+  }
+
+  function __formatSuperstrikeReadout(field, value) {
+    const normalized = __clampSuperstrikeValue(field, value, field === "triggerPoint" ? 1 : 0);
+    if (field === "rapidTrigger" && normalized <= 0) return "OFF";
+    return String(normalized);
+  }
+
+  function __getSuperstrikeInput(card, field, role) {
+    if (!card) return null;
+    return card.querySelector(
+      `input[type="range"][data-superstrike-field="${field}"][data-superstrike-role="${role}"]`
+    );
+  }
+
+  function __setSuperstrikeRangeValue(input, field, value) {
+    if (!input) return;
+    const range = __getSuperstrikeFieldRange(field);
+    input.min = String(range.min);
+    input.max = String(range.max);
+    input.step = String(range.step);
+    const nextValue = __clampSuperstrikeValue(field, value, field === "triggerPoint" ? 1 : 0);
+    if (String(input.value) !== String(nextValue)) input.value = String(nextValue);
+    const readout = input.closest(".slider-card")?.querySelector(".value-readout");
+    if (readout) readout.textContent = __formatSuperstrikeReadout(field, nextValue);
+  }
+
+  function __canWriteSuperstrikeSwitches() {
+    return getCapabilities()?.superstrikeSwitches === true;
+  }
+
+  function __capabilityAllowsFeature(key) {
+    const cap = getCapabilities() || {};
+    if (!Object.prototype.hasOwnProperty.call(cap, key)) return true;
+    return cap[key] === true;
+  }
+
+  function syncSuperstrikeCompositeUi({ value = undefined } = {}) {
+    const hasReadbackValue = value !== undefined && value !== null;
+    if (hasReadbackValue) {
+      __superstrikeUiState = __normalizeSuperstrikeSwitches(value, __superstrikeUiState);
+    } else if (!__superstrikeUiState) {
+      __superstrikeUiState = __defaultSuperstrikeSwitches();
+    }
+
+    const state = __normalizeSuperstrikeSwitches(__superstrikeUiState);
+    __superstrikeUiState = state;
+
+    SUPERSTRIKE_COMPOSITES.forEach((meta) => {
+      const card = getAdvancedContainerNode(meta.item, {
+        region: ADV_REGION_SINGLE,
+        control: "panel",
+      });
+      if (!card) return;
+
+      const leftValue = __superstrikeUiValueFromSide(meta.field, state.left);
+      const rightValue = __superstrikeUiValueFromSide(meta.field, state.right);
+      if (hasReadbackValue && __shouldInferSuperstrikeMode(meta.field)) {
+        __setSuperstrikeCompositeMode(
+          meta.field,
+          __inferSuperstrikeModeFromValues(leftValue, rightValue)
+        );
+      }
+      const mode = __normalizeSuperstrikeMode(__superstrikeCompositeModes[meta.field]);
+      __superstrikeCompositeModes[meta.field] = mode;
+      card.dataset.superstrikeMode = mode;
+      card.classList.toggle("is-asymmetric", mode === "asymmetric");
+
+      const modeSwitchInput = getAdvancedToggleInput(meta.item, { region: ADV_REGION_SINGLE });
+      if (modeSwitchInput) modeSwitchInput.checked = mode === "asymmetric";
+
+      const symmetricView = card.querySelector('[data-superstrike-view="symmetric"]');
+      const asymmetricView = card.querySelector('[data-superstrike-view="asymmetric"]');
+      if (symmetricView) symmetricView.classList.toggle("is-active", mode === "symmetric");
+      if (asymmetricView) asymmetricView.classList.toggle("is-active", mode === "asymmetric");
+
+      const symmetricInput = __getSuperstrikeInput(card, meta.field, "symmetric");
+      const leftInput = __getSuperstrikeInput(card, meta.field, "left");
+      const rightInput = __getSuperstrikeInput(card, meta.field, "right");
+      __setSuperstrikeRangeValue(symmetricInput, meta.field, leftValue);
+      __setSuperstrikeRangeValue(leftInput, meta.field, leftValue);
+      __setSuperstrikeRangeValue(rightInput, meta.field, rightValue);
+      if (symmetricInput) symmetricInput.disabled = mode !== "symmetric";
+      if (leftInput) leftInput.disabled = mode !== "asymmetric";
+      if (rightInput) rightInput.disabled = mode !== "asymmetric";
+    });
+
+    return state;
+  }
+
+  function commitSuperstrikeSwitches(next) {
+    __superstrikeUiState = __normalizeSuperstrikeSwitches(next, __superstrikeUiState);
+    syncSuperstrikeCompositeUi();
+    if (!__canWriteSuperstrikeSwitches()) return;
+    enqueueDevicePatch({ superstrikeSwitches: __superstrikeUiState });
+  }
+
+  function commitSuperstrikeCompositeValue(field, role, value) {
+    commitSuperstrikeSwitches(__buildSuperstrikeSwitchesFromComposite(field, role, value));
+  }
+
+  function setSuperstrikeCompositeMode(meta, rawMode) {
+    if (!meta?.field) return;
+    const currentMode = __normalizeSuperstrikeMode(__superstrikeCompositeModes[meta.field]);
+    const nextMode = __normalizeSuperstrikeMode(rawMode);
+    __setSuperstrikeCompositeMode(meta.field, nextMode, { touched: true });
+    if (currentMode === nextMode) {
+      syncSuperstrikeCompositeUi();
+      return;
+    }
+    if (nextMode === "symmetric") {
+      const state = __normalizeSuperstrikeSwitches(__superstrikeUiState);
+      const linkedValue = __superstrikeUiValueFromSide(meta.field, state.left);
+      commitSuperstrikeSwitches(
+        __buildSuperstrikeSwitchesFromComposite(meta.field, "symmetric", linkedValue)
+      );
+      return;
+    }
+    syncSuperstrikeCompositeUi();
+  }
+
+  function initSuperstrikeCompositeUi(root) {
+    const scope = root || getAdvancedRegionNode(ADV_REGION_SINGLE);
+    if (!scope) return;
+    SUPERSTRIKE_COMPOSITES.forEach((meta) => {
+      const card = getAdvancedContainerNode(meta.item, {
+        region: ADV_REGION_SINGLE,
+        control: "panel",
+      });
+      if (!card || card.dataset.superstrikeUiBound === "1") return;
+      card.dataset.superstrikeUiBound = "1";
+
+      const modeInput = getAdvancedToggleInput(meta.item, { region: ADV_REGION_SINGLE })
+        || card.querySelector('input[type="checkbox"][data-adv-control="toggle"]');
+      if (modeInput) {
+        modeInput.addEventListener("change", () => {
+          setSuperstrikeCompositeMode(meta, modeInput.checked ? "asymmetric" : "symmetric");
+        });
+      }
+
+      const bindModeSegment = (el, mode) => {
+        if (!el) return;
+        el.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setSuperstrikeCompositeMode(meta, mode);
+        });
+      };
+      bindModeSegment(card.querySelector(".v-switch-text-top"), "asymmetric");
+      bindModeSegment(card.querySelector(".v-switch-text-bottom"), "symmetric");
+
+      card.querySelectorAll('input[type="range"][data-superstrike-field][data-superstrike-role]').forEach((input) => {
+        bindRangeCommit(input, {
+          onInput: () => {
+            if (input.disabled) return;
+            const next = __buildSuperstrikeSwitchesFromComposite(
+              input.dataset.superstrikeField,
+              input.dataset.superstrikeRole,
+              input.value
+            );
+            __superstrikeUiState = next;
+            syncSuperstrikeCompositeUi();
+          },
+          onCommit: () => {
+            if (input.disabled) {
+              syncSuperstrikeCompositeUi();
+              return;
+            }
+            commitSuperstrikeCompositeValue(
+              input.dataset.superstrikeField,
+              input.dataset.superstrikeRole,
+              input.value
+            );
+          },
+        });
+      });
+    });
+    syncSuperstrikeCompositeUi();
+  }
+
   function getSleepSourcePresenter({ warnOnMissing = false } = {}) {
     const sourceRegion = getAdvancedSourceRegion("sleepSeconds", ADV_REGION_DUAL_LEFT);
     const sleepSelect = getSourceSelectByStdKey("sleepSeconds", ADV_REGION_DUAL_LEFT, { warnOnMissing });
@@ -4360,6 +4763,7 @@ function lockEl(el) {
     }
 
     syncSmartTrackingCompositeUi();
+    syncSuperstrikeCompositeUi();
 
     const lowPowerInput = getSourceRangeByStdKey("lowPowerThresholdPercent", ADV_REGION_SINGLE);
     if (lowPowerInput) {
@@ -4456,6 +4860,7 @@ function lockEl(el) {
     if (lightforceToggle) {
       lightforceToggle.addEventListener("change", () => {
         if (!hasFeature("hasLightforceSwitch")) return;
+        if (!__capabilityAllowsFeature("lightforceSwitch")) return;
         enqueueDevicePatch({ lightforceSwitch: lightforceToggle.checked ? "optical" : "hybrid" });
       });
     }
@@ -4663,6 +5068,7 @@ function lockEl(el) {
     }
 
     syncSmartTrackingCompositeUi();
+    initSuperstrikeCompositeUi(root);
     syncSingleAdvancedUi();
   }
 
@@ -4977,6 +5383,7 @@ function lockEl(el) {
       try { clearTimeout(timerId); } catch (_) {}
     }
     writeDebouncers.clear();
+    __resetSuperstrikeCompositeState();
   }
 
   function __resetDeviceScopedUiState() {
@@ -7933,6 +8340,13 @@ function openDrawer(btn) {
   function __isSameStandardValue(a, b) {
     if (Object.is(a, b)) return true;
     if (a == null || b == null) return false;
+    if (typeof a === "object" || typeof b === "object") {
+      try {
+        return JSON.stringify(a) === JSON.stringify(b);
+      } catch (_) {
+        return false;
+      }
+    }
     const na = Number(a);
     const nb = Number(b);
     if (Number.isFinite(na) && Number.isFinite(nb)) return na === nb;
@@ -8663,6 +9077,11 @@ function openDrawer(btn) {
       );
     }
 
+    const superstrikeSwitches = readMerged("superstrikeSwitches");
+    if (superstrikeSwitches != null) {
+      syncSuperstrikeCompositeUi({ value: superstrikeSwitches });
+    }
+
     const bhopMs = readMerged("bhopMs");
     if (bhopMs != null) {
       const normalizedBhopMs = __clampBhopDelay(bhopMs);
@@ -9023,7 +9442,7 @@ function openDrawer(btn) {
 
       hidConnecting = true;
       hidLinked = false;
-      __resetBatterySessionState({ clearText: true });
+      __resetDeviceScopedTransientState();
       __batteryPrimePendingForCurrentSession = true;
       if (!isSilent) __setLandingCaption("INITIATE SYNCHRONIZATION...");
 
@@ -9345,6 +9764,7 @@ function openDrawer(btn) {
       __connectPending = null;
       hidConnecting = false;
       hidLinked = false;
+      __resetDeviceScopedTransientState();
 
       await hidApi.close();
       hidApi.device = null;

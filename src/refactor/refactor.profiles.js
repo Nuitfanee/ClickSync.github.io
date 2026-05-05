@@ -486,12 +486,63 @@
     8000: "#4F46E5",
   });
 
+  function normalizeLogitechSuperstrikeSide(value, fallback = {}) {
+    const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const fb = fallback && typeof fallback === "object" && !Array.isArray(fallback) ? fallback : {};
+    const pick = (...keys) => {
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(src, key)) return src[key];
+      }
+      return undefined;
+    };
+    const normalizeNumber = (raw, fallbackValue, min, max) => {
+      const n = toNumber(raw ?? fallbackValue);
+      if (!Number.isFinite(n)) return fallbackValue;
+      return clamp(Math.round(n), min, max);
+    };
+    const enabledRaw = pick("rapidTriggerEnabled", "rapidEnabled", "rapidTriggerOn");
+    return {
+      triggerPoint: normalizeNumber(
+        pick("triggerPoint", "actuationPoint", "trigger"),
+        fb.triggerPoint ?? 1,
+        1,
+        10
+      ),
+      rapidTriggerDistance: normalizeNumber(
+        pick("rapidTriggerDistance", "rapidDistance"),
+        fb.rapidTriggerDistance ?? 1,
+        0,
+        5
+      ),
+      rapidTriggerEnabled: enabledRaw == null ? !!fb.rapidTriggerEnabled : !!enabledRaw,
+      clickFeedback: normalizeNumber(
+        pick("clickFeedback", "feedback", "tactileFeedback"),
+        fb.clickFeedback ?? 0,
+        0,
+        5
+      ),
+    };
+  }
+
+  function normalizeLogitechSuperstrikeSwitches(value, fallback = {}) {
+    if (value == null) return undefined;
+    const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const fb = fallback && typeof fallback === "object" && !Array.isArray(fallback) ? fallback : {};
+    return {
+      left: normalizeLogitechSuperstrikeSide(src.left, fb.left),
+      right: normalizeLogitechSuperstrikeSide(src.right, fb.right),
+    };
+  }
+
   const LogitechProfile = composeDeviceProfile({
     id: "logitech",
     ui: {
       landingReadyText: "LOGITECH READY",
       dpiEditorHint: "光学引擎抬起距离",
       pollingThemeByWirelessHz: LOGITECH_POLLING_THEME_BY_HZ,
+      advancedPanelCapabilityDensities: {
+        superstrikeSwitches: "superstrike",
+      },
       advancedPanels: {
         sleepSeconds: {
           enabled: false,
@@ -499,11 +550,23 @@
         sensorAngle: {
           enabled: false,
         },
+        lightforceSwitch: {
+          requiresCapabilities: ["lightforceSwitch"],
+        },
         dynamicSensitivityComposite: {
           enabled: false,
         },
         smartTrackingComposite: {
           enabled: false,
+        },
+        superstrikeTriggerPointComposite: {
+          requiresCapabilities: ["superstrikeSwitches"],
+        },
+        superstrikeRapidTriggerComposite: {
+          requiresCapabilities: ["superstrikeSwitches"],
+        },
+        superstrikeClickFeedbackComposite: {
+          requiresCapabilities: ["superstrikeSwitches"],
         },
         lowPowerThresholdPercent: {
           enabled: false,
@@ -512,12 +575,43 @@
           enabled: false,
         },
       },
+      advancedSingleOrders: {
+        onboardMemory: 10,
+        lightforceSwitch: 20,
+        surfaceMode: 30,
+        superstrikeTriggerPointComposite: 40,
+        superstrikeRapidTriggerComposite: 50,
+        superstrikeClickFeedbackComposite: 60,
+        bhopToggle: 70,
+        bhopDelay: 80,
+      },
+      advancedSourceRegionByStdKey: {
+        ...ADVANCED_SOURCE_REGION_DEFAULTS,
+        onboardMemoryMode: "single",
+        lightforceSwitch: "single",
+        surfaceMode: "single",
+        bhopMs: "single",
+        superstrikeSwitches: "single",
+        superstrikeTriggerPointSym: "single",
+        superstrikeTriggerPointLeft: "single",
+        superstrikeTriggerPointRight: "single",
+        superstrikeRapidTriggerSym: "single",
+        superstrikeRapidTriggerLeft: "single",
+        superstrikeRapidTriggerRight: "single",
+        superstrikeClickFeedbackSym: "single",
+        superstrikeClickFeedbackLeft: "single",
+        superstrikeClickFeedbackRight: "single",
+      },
       basicModeTypography: {
         columnsOffsetX: -120,
       },
       keymap: {
         imageSrc: "./assets/images/GPW.webp",
         variants: [
+          {
+            deviceNames: ["PRO X2 SUPERSTRIKE", "PRO X 2 SUPERSTRIKE", "PRO_X2_SUPERSTRIKE", "PRO X2 SUPERSTRI"],
+            imageSrc: "./assets/images/GPW_SUPERSTRIKE.webp",
+          },
           {
             deviceNames: ["PRO X 2 DEX"],
             imageSrc: "./assets/images/GPW_DEX.webp",
@@ -567,6 +661,11 @@
           stepSegments: LOGITECH_DPI_STEP_SEGMENTS,
         },
       },
+      superstrikeSwitches: {
+        triggerPoint: { min: 1, max: 10, step: 1 },
+        rapidTrigger: { min: 0, max: 5, step: 1 },
+        clickFeedback: { min: 0, max: 5, step: 1 },
+      },
     },
     keyMap: {
       performanceMode: null,
@@ -577,6 +676,7 @@
       onboardMemoryMode: "onboardMemoryMode",
       lightforceSwitch: "lightforceSwitch",
       surfaceMode: "surfaceMode",
+      superstrikeSwitches: "superstrikeSwitches",
       bhopMs: "bhopMs",
     },
     transforms: {
@@ -610,6 +710,10 @@
           if (mode === "off") return "off";
           return "auto";
         },
+      },
+      superstrikeSwitches: {
+        write: (v) => normalizeLogitechSuperstrikeSwitches(v),
+        read: (raw) => normalizeLogitechSuperstrikeSwitches(raw),
       },
       bhopMs: {
         write: (v) => {
@@ -650,6 +754,10 @@
       onboardMemoryMode: { method: "setOnboardMemoryMode" },
       lightforceSwitch: { method: "setLightforceSwitch" },
       surfaceMode: { method: "setSurfaceMode" },
+      superstrikeSwitches: async ({ hidApi, value }) => {
+        if (typeof hidApi?.setBatchFeatures !== "function") return;
+        await hidApi.setBatchFeatures({ superstrikeSwitches: value });
+      },
       bhopMs: async ({ hidApi, value }) => {
         if (typeof hidApi?.setBatchFeatures !== "function") return;
         await hidApi.setBatchFeatures({ bhopMs: value });

@@ -16,7 +16,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Click Sync</title>
   <meta name="color-scheme" content="light dark" />
-  <meta name="app-asset-version" content="2026.03.27.9" />
+  <meta name="app-asset-version" content="2026.05.06.1" />
   <!-- Font preconnect optimization -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -68,8 +68,8 @@
               <span class="rule-power-intro">
                 <span class="rule-power-label">目前支持的品牌型号包括：</span>
                 <span class="rule-power-list">
-                  <span class="rule-power-item">雷蛇（ 毒蝰 V3 Pro。请退出雷云驱动使用 ）、</span>
-                  <span class="rule-power-item">罗技（ GPW3/4 ）、</span>
+                  <span class="rule-power-item">雷蛇（ 毒蝰V3Pro、毒蝰V4Pro。请退出雷云驱动使用 ）、</span>
+                  <span class="rule-power-item">罗技（ GPW3、GPW4朱雀、GPW4鹰眼、小狗、GPW5雪豹 ）、</span>
                   <span class="rule-power-item">雷柏（ 二代 54L15 的 3950 系列鼠标 ）、</span>
                   <span class="rule-power-item">ATK（ 54L15 的 3950 系列鼠标 ）、</span>
                   <span class="rule-power-item">Ninjutso（ Sora V3 ）、</span>
@@ -925,24 +925,6 @@
                 </div>
               </label>
 
-              <label class="advShutterItem adv-text-toggle" id="bhopToggleItem" data-adv-item="bhopToggle" data-adv-control="toggle" data-std-key="bhopMs">
-                <input type="checkbox" class="raw-input" id="bhopToggle" />
-                <div class="shutter-row">
-                  <div class="shutter-bg"></div><div class="border-deco"></div>
-                  <div class="content-layer">
-                    <div class="meta">
-                      <span class="label-code">LG04 // BHOP</span>
-                      <span class="label-title">BHOP 滚轮模式</span>
-                      <span class="label-desc">BHOP模式可防止意外触碰滚轮时产生的误跳跃。</span>
-                    </div>
-                    <div class="status-indicator">
-                      <span class="status-text" data-off="关闭" data-on="开启"></span>
-                      <div class="crosshair"></div>
-                    </div>
-                  </div>
-                </div>
-              </label>
-
               <div class="advShutterItem adv-cycle-item surface-cycle-item" id="surfaceModeCycle" data-adv-item="surfaceMode" data-adv-control="cycle" data-std-key="surfaceMode" role="button" tabindex="0" aria-label="Surface tuning mode">
                 <div class="shutter-row">
                   <div class="shutter-bg-base"></div>
@@ -995,6 +977,221 @@
                   <input type="checkbox" class="raw-input" id="dynamicSensitivityEnabledInput" tabindex="-1" data-adv-item="dynamicSensitivityComposite" data-adv-control="toggle" data-std-key="dynamicSensitivityEnabled" aria-label="动态灵敏度开关" />
                 </div>
               </div>
+            </div>
+
+            <div class="adv-composite-card superstrike-composite-card" id="superstrikeTriggerPointCompositeCard" data-adv-region="single" data-adv-item="superstrikeTriggerPointComposite" data-adv-control="panel" aria-label="Superstrike trigger point">
+              <div class="adv-composite-head">
+                <label class="adv-v-switch">
+                  <input type="checkbox" class="adv-composite-mode-input" data-adv-item="superstrikeTriggerPointComposite" data-adv-control="toggle" aria-label="Toggle trigger point asymmetric mode">
+                  <div class="v-switch-track">
+                    <div class="v-switch-text v-switch-text-top">分键</div>
+                    <div class="v-switch-text v-switch-text-bottom">联动</div>
+                  </div>
+                </label>
+              </div>
+              <div class="adv-composite-body">
+                <div class="adv-composite-view is-active" data-superstrike-view="symmetric">
+                  <div class="slider-card" data-adv-item="superstrikeTriggerPoint" data-adv-control="range" data-std-key="superstrikeTriggerPointSym" aria-label="Superstrike trigger point symmetric">
+                    <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                    <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                    <div class="slider-header-row">
+                      <div class="slider-info">
+                        <span class="slider-name">触发点</span>
+                        <span class="slider-sub">左右键同步 // RANGE 1 - 10</span>
+                      </div>
+                      <div class="value-readout" data-unit="">1</div>
+                    </div>
+                    <div class="range-wrap">
+                      <div class="custom-track"></div>
+                      <input type="range" min="1" max="10" step="1" value="1" data-adv-item="superstrikeTriggerPoint" data-adv-control="range" data-std-key="superstrikeTriggerPointSym" data-superstrike-field="triggerPoint" data-superstrike-role="symmetric" aria-label="Superstrike trigger point both buttons" />
+                    </div>
+                  </div>
+                </div>
+                <div class="adv-composite-view" data-superstrike-view="asymmetric">
+                  <div class="adv-composite-grid">
+                    <div class="slider-card" data-adv-item="superstrikeTriggerPointLeft" data-adv-control="range" data-std-key="superstrikeTriggerPointLeft" aria-label="Superstrike left trigger point">
+                      <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                      <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                      <div class="slider-header-row">
+                        <div class="slider-info">
+                          <span class="slider-name">左键触发点</span>
+                          <span class="slider-sub">RANGE 1 - 10</span>
+                        </div>
+                        <div class="value-readout" data-unit="">1</div>
+                      </div>
+                      <div class="range-wrap">
+                        <div class="custom-track"></div>
+                        <input type="range" min="1" max="10" step="1" value="1" data-adv-item="superstrikeTriggerPointLeft" data-adv-control="range" data-std-key="superstrikeTriggerPointLeft" data-superstrike-field="triggerPoint" data-superstrike-role="left" aria-label="Superstrike left trigger point" />
+                      </div>
+                    </div>
+                    <div class="slider-card" data-adv-item="superstrikeTriggerPointRight" data-adv-control="range" data-std-key="superstrikeTriggerPointRight" aria-label="Superstrike right trigger point">
+                      <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                      <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                      <div class="slider-header-row">
+                        <div class="slider-info">
+                          <span class="slider-name">右键触发点</span>
+                          <span class="slider-sub">RANGE 1 - 10</span>
+                        </div>
+                        <div class="value-readout" data-unit="">1</div>
+                      </div>
+                      <div class="range-wrap">
+                        <div class="custom-track"></div>
+                        <input type="range" min="1" max="10" step="1" value="1" data-adv-item="superstrikeTriggerPointRight" data-adv-control="range" data-std-key="superstrikeTriggerPointRight" data-superstrike-field="triggerPoint" data-superstrike-role="right" aria-label="Superstrike right trigger point" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="adv-composite-card superstrike-composite-card" id="superstrikeRapidTriggerCompositeCard" data-adv-region="single" data-adv-item="superstrikeRapidTriggerComposite" data-adv-control="panel" aria-label="Superstrike rapid trigger">
+              <div class="adv-composite-head">
+                <label class="adv-v-switch">
+                  <input type="checkbox" class="adv-composite-mode-input" data-adv-item="superstrikeRapidTriggerComposite" data-adv-control="toggle" aria-label="Toggle rapid trigger asymmetric mode">
+                  <div class="v-switch-track">
+                    <div class="v-switch-text v-switch-text-top">分键</div>
+                    <div class="v-switch-text v-switch-text-bottom">联动</div>
+                  </div>
+                </label>
+              </div>
+              <div class="adv-composite-body">
+                <div class="adv-composite-view is-active" data-superstrike-view="symmetric">
+                  <div class="slider-card" data-adv-item="superstrikeRapidTrigger" data-adv-control="range" data-std-key="superstrikeRapidTriggerSym" aria-label="Superstrike rapid trigger symmetric">
+                    <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                    <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                    <div class="slider-header-row">
+                      <div class="slider-info">
+                        <span class="slider-name">快速触发</span>
+                        <span class="slider-sub">0 = OFF // RANGE 1 - 5</span>
+                      </div>
+                      <div class="value-readout" data-unit="">OFF</div>
+                    </div>
+                    <div class="range-wrap">
+                      <div class="custom-track"></div>
+                      <input type="range" min="0" max="5" step="1" value="0" data-adv-item="superstrikeRapidTrigger" data-adv-control="range" data-std-key="superstrikeRapidTriggerSym" data-superstrike-field="rapidTrigger" data-superstrike-role="symmetric" aria-label="Superstrike rapid trigger both buttons" />
+                    </div>
+                  </div>
+                </div>
+                <div class="adv-composite-view" data-superstrike-view="asymmetric">
+                  <div class="adv-composite-grid">
+                    <div class="slider-card" data-adv-item="superstrikeRapidTriggerLeft" data-adv-control="range" data-std-key="superstrikeRapidTriggerLeft" aria-label="Superstrike left rapid trigger">
+                      <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                      <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                      <div class="slider-header-row">
+                        <div class="slider-info">
+                          <span class="slider-name">左键快速触发</span>
+                          <span class="slider-sub">0 = OFF // RANGE 1 - 5</span>
+                        </div>
+                        <div class="value-readout" data-unit="">OFF</div>
+                      </div>
+                      <div class="range-wrap">
+                        <div class="custom-track"></div>
+                        <input type="range" min="0" max="5" step="1" value="0" data-adv-item="superstrikeRapidTriggerLeft" data-adv-control="range" data-std-key="superstrikeRapidTriggerLeft" data-superstrike-field="rapidTrigger" data-superstrike-role="left" aria-label="Superstrike left rapid trigger" />
+                      </div>
+                    </div>
+                    <div class="slider-card" data-adv-item="superstrikeRapidTriggerRight" data-adv-control="range" data-std-key="superstrikeRapidTriggerRight" aria-label="Superstrike right rapid trigger">
+                      <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                      <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                      <div class="slider-header-row">
+                        <div class="slider-info">
+                          <span class="slider-name">右键快速触发</span>
+                          <span class="slider-sub">0 = OFF // RANGE 1 - 5</span>
+                        </div>
+                        <div class="value-readout" data-unit="">OFF</div>
+                      </div>
+                      <div class="range-wrap">
+                        <div class="custom-track"></div>
+                        <input type="range" min="0" max="5" step="1" value="0" data-adv-item="superstrikeRapidTriggerRight" data-adv-control="range" data-std-key="superstrikeRapidTriggerRight" data-superstrike-field="rapidTrigger" data-superstrike-role="right" aria-label="Superstrike right rapid trigger" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="adv-composite-card superstrike-composite-card" id="superstrikeClickFeedbackCompositeCard" data-adv-region="single" data-adv-item="superstrikeClickFeedbackComposite" data-adv-control="panel" aria-label="Superstrike click feedback">
+              <div class="adv-composite-head">
+                <label class="adv-v-switch">
+                  <input type="checkbox" class="adv-composite-mode-input" data-adv-item="superstrikeClickFeedbackComposite" data-adv-control="toggle" aria-label="Toggle click feedback asymmetric mode">
+                  <div class="v-switch-track">
+                    <div class="v-switch-text v-switch-text-top">分键</div>
+                    <div class="v-switch-text v-switch-text-bottom">联动</div>
+                  </div>
+                </label>
+              </div>
+              <div class="adv-composite-body">
+                <div class="adv-composite-view is-active" data-superstrike-view="symmetric">
+                  <div class="slider-card" data-adv-item="superstrikeClickFeedback" data-adv-control="range" data-std-key="superstrikeClickFeedbackSym" aria-label="Superstrike click feedback symmetric">
+                    <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                    <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                    <div class="slider-header-row">
+                      <div class="slider-info">
+                        <span class="slider-name">点击触觉反馈</span>
+                        <span class="slider-sub">左右键同步 // RANGE 0 - 5</span>
+                      </div>
+                      <div class="value-readout" data-unit="">0</div>
+                    </div>
+                    <div class="range-wrap">
+                      <div class="custom-track"></div>
+                      <input type="range" min="0" max="5" step="1" value="0" data-adv-item="superstrikeClickFeedback" data-adv-control="range" data-std-key="superstrikeClickFeedbackSym" data-superstrike-field="clickFeedback" data-superstrike-role="symmetric" aria-label="Superstrike click feedback both buttons" />
+                    </div>
+                  </div>
+                </div>
+                <div class="adv-composite-view" data-superstrike-view="asymmetric">
+                  <div class="adv-composite-grid">
+                    <div class="slider-card" data-adv-item="superstrikeClickFeedbackLeft" data-adv-control="range" data-std-key="superstrikeClickFeedbackLeft" aria-label="Superstrike left click feedback">
+                      <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                      <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                      <div class="slider-header-row">
+                        <div class="slider-info">
+                          <span class="slider-name">左键触觉反馈</span>
+                          <span class="slider-sub">RANGE 0 - 5</span>
+                        </div>
+                        <div class="value-readout" data-unit="">0</div>
+                      </div>
+                      <div class="range-wrap">
+                        <div class="custom-track"></div>
+                        <input type="range" min="0" max="5" step="1" value="0" data-adv-item="superstrikeClickFeedbackLeft" data-adv-control="range" data-std-key="superstrikeClickFeedbackLeft" data-superstrike-field="clickFeedback" data-superstrike-role="left" aria-label="Superstrike left click feedback" />
+                      </div>
+                    </div>
+                    <div class="slider-card" data-adv-item="superstrikeClickFeedbackRight" data-adv-control="range" data-std-key="superstrikeClickFeedbackRight" aria-label="Superstrike right click feedback">
+                      <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
+                      <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
+                      <div class="slider-header-row">
+                        <div class="slider-info">
+                          <span class="slider-name">右键触觉反馈</span>
+                          <span class="slider-sub">RANGE 0 - 5</span>
+                        </div>
+                        <div class="value-readout" data-unit="">0</div>
+                      </div>
+                      <div class="range-wrap">
+                        <div class="custom-track"></div>
+                        <input type="range" min="0" max="5" step="1" value="0" data-adv-item="superstrikeClickFeedbackRight" data-adv-control="range" data-std-key="superstrikeClickFeedbackRight" data-superstrike-field="clickFeedback" data-superstrike-role="right" aria-label="Superstrike right click feedback" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="shutter-list" aria-label="BHOP toggle">
+              <label class="advShutterItem adv-text-toggle" id="bhopToggleItem" data-adv-item="bhopToggle" data-adv-control="toggle" data-std-key="bhopMs">
+                <input type="checkbox" class="raw-input" id="bhopToggle" />
+                <div class="shutter-row">
+                  <div class="shutter-bg"></div><div class="border-deco"></div>
+                  <div class="content-layer">
+                    <div class="meta">
+                      <span class="label-code">LG04 // BHOP</span>
+                      <span class="label-title">BHOP 滚轮模式</span>
+                      <span class="label-desc">BHOP模式可防止意外触碰滚轮时产生的误跳跃。</span>
+                    </div>
+                    <div class="status-indicator">
+                      <span class="status-text" data-off="关闭" data-on="开启"></span>
+                      <div class="crosshair"></div>
+                    </div>
+                  </div>
+                </div>
+              </label>
             </div>
 
             <div class="slider-card adv-bhop-card" id="bhopDelayCard" data-adv-item="bhopDelay" data-adv-control="range" data-std-key="bhopMs" aria-label="BHOP Delay">
@@ -1798,25 +1995,25 @@
   <!-- ==================== JavaScript Script References ==================== -->
   <!-- Note: script load order is critical; do not reorder casually -->
   <script>
-    window.__APP_ASSET_VERSION__ = "2026.03.27.9";
+    window.__APP_ASSET_VERSION__ = "2026.05.06.1";
     try { document.documentElement.dataset.assetVersion = window.__APP_ASSET_VERSION__; } catch (_) {}
     try { console.info(`[Assets] JS version ${window.__APP_ASSET_VERSION__}`); } catch (_) {}
   </script>
   <!-- Device runtime: core HID connection and communication -->
-  <script src="./src/core/device_runtime.js?v=2026.03.27.9"></script>
-  <script src="./src/core/i18n.literals.js?v=2026.03.27.9"></script>
+  <script src="./src/core/device_runtime.js?v=2026.05.06.1"></script>
+  <script src="./src/core/i18n.literals.js?v=2026.05.06.1"></script>
   <!-- Refactor utilities: shared utility functions and helpers -->
-  <script src="./src/refactor/refactor.core.js?v=2026.03.27.9"></script>
-  <script src="./src/refactor/refactor.profiles.js?v=2026.03.27.9"></script>
-  <script src="./src/refactor/refactor.ui.js?v=2026.03.27.9"></script>
+  <script src="./src/refactor/refactor.core.js?v=2026.05.06.1"></script>
+  <script src="./src/refactor/refactor.profiles.js?v=2026.05.06.1"></script>
+  <script src="./src/refactor/refactor.ui.js?v=2026.05.06.1"></script>
   <!-- Main application logic: routing, UI interactions, and data binding -->
-  <script src="./src/core/app.js?v=2026.03.27.9"></script>
+  <script src="./src/core/app.js?v=2026.05.06.1"></script>
   <!-- Main mouse test features: key mapping, DPI, performance, and more -->
-  <script src="./src/tools/mouse-main.js?v=2026.03.27.9"></script>
+  <script src="./src/tools/mouse-main.js?v=2026.05.06.1"></script>
   <!-- Navigation and matching tools: sensitivity matching feature -->
-  <script src="./src/tools/nav-match.js?v=2026.03.27.9"></script>
+  <script src="./src/tools/nav-match.js?v=2026.05.06.1"></script>
   <!-- Angle calibration tool: mouse angle calibration feature -->
-  <script src="./src/tools/rotation-calibration.js?v=2026.03.27.9"></script>
+  <script src="./src/tools/rotation-calibration.js?v=2026.05.06.1"></script>
 
   <script>
   /**

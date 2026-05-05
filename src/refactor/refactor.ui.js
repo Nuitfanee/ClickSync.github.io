@@ -750,6 +750,7 @@
   const ADVANCED_LAYOUT_DUAL = "dual";
   const ADVANCED_PANEL_DENSITY_DEFAULT = "default";
   const ADVANCED_PANEL_DENSITY_COMPACT = "compact";
+  const ADVANCED_PANEL_DENSITY_SUPERSTRIKE = "superstrike";
   const ADVANCED_PANEL_HOSTS = Object.freeze({
     sleepSeconds: Object.freeze([
       Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="sleepSeconds"][data-adv-control="range"]' }),
@@ -815,6 +816,15 @@
     ]),
     smartTrackingComposite: Object.freeze([
       Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="smartTrackingComposite"][data-adv-control="panel"]' }),
+    ]),
+    superstrikeTriggerPointComposite: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="superstrikeTriggerPointComposite"][data-adv-control="panel"]' }),
+    ]),
+    superstrikeRapidTriggerComposite: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="superstrikeRapidTriggerComposite"][data-adv-control="panel"]' }),
+    ]),
+    superstrikeClickFeedbackComposite: Object.freeze([
+      Object.freeze({ region: "single", selector: '[data-adv-region="single"] [data-adv-item="superstrikeClickFeedbackComposite"][data-adv-control="panel"]' }),
     ]),
     lowPowerThresholdPercent: Object.freeze([
       Object.freeze({ region: "single", selector: '[data-adv-region="single"] .slider-card[data-adv-item="lowPowerThresholdPercent"][data-adv-control="range"]' }),
@@ -897,17 +907,28 @@
     return raw === ADVANCED_LAYOUT_SINGLE ? ADVANCED_LAYOUT_SINGLE : ADVANCED_LAYOUT_DUAL;
   }
 
-  function resolveAdvancedPanelDensity(ui) {
-    const raw = String(ui?.advancedPanelDensity || "").trim().toLowerCase();
-    return raw === ADVANCED_PANEL_DENSITY_COMPACT
-      ? ADVANCED_PANEL_DENSITY_COMPACT
-      : ADVANCED_PANEL_DENSITY_DEFAULT;
+  function normalizeAdvancedPanelDensity(rawValue) {
+    const raw = String(rawValue || "").trim().toLowerCase();
+    if (raw === ADVANCED_PANEL_DENSITY_COMPACT) return ADVANCED_PANEL_DENSITY_COMPACT;
+    if (raw === ADVANCED_PANEL_DENSITY_SUPERSTRIKE) return ADVANCED_PANEL_DENSITY_SUPERSTRIKE;
+    return ADVANCED_PANEL_DENSITY_DEFAULT;
   }
 
-  function applyAdvancedPanelDensity({ doc, ui }) {
+  function resolveAdvancedPanelDensity(ui, capabilities = null) {
+    const capabilityBag = (capabilities && typeof capabilities === "object") ? capabilities : {};
+    const capabilityDensities = (ui?.advancedPanelCapabilityDensities && typeof ui.advancedPanelCapabilityDensities === "object")
+      ? ui.advancedPanelCapabilityDensities
+      : {};
+    const capabilityDensity = Object.entries(capabilityDensities).find(([capabilityKey]) => !!capabilityBag[capabilityKey]);
+    if (capabilityDensity) return normalizeAdvancedPanelDensity(capabilityDensity[1]);
+    const raw = String(ui?.advancedPanelDensity || "").trim().toLowerCase();
+    return normalizeAdvancedPanelDensity(raw);
+  }
+
+  function applyAdvancedPanelDensity({ doc, ui, capabilities = null }) {
     const advancedPanel = getAdvancedPanel(doc);
     if (!advancedPanel) return;
-    advancedPanel.setAttribute("data-adv-density", resolveAdvancedPanelDensity(ui));
+    advancedPanel.setAttribute("data-adv-density", resolveAdvancedPanelDensity(ui, capabilities));
   }
 
   function applyAdvancedLayout({ doc, layout }) {
@@ -1042,7 +1063,7 @@
     const ui = adapter?.ui || {};
     const layout = resolveAdvancedLayout(features);
     applyAdvancedLayout({ doc, layout });
-    applyAdvancedPanelDensity({ doc, ui });
+    applyAdvancedPanelDensity({ doc, ui, capabilities });
     applyAdvancedPanelAvailability({ doc, adapter, layout, capabilities });
     applyAdvancedSingleItemOrders({ doc, adapter });
   }
@@ -1349,14 +1370,14 @@
    * 3) Add rendering rules here; avoid protocol logic.
    * 4) Keep write/read behavior in app.js + profiles/core.
    */
-  function applyVariant({ deviceId, adapter, root, deviceName = "", keymapOnly = false }) {
+  function applyVariant({ deviceId, adapter, root, deviceName = "", keymapOnly = false, capabilities = null }) {
     const doc = root || document;
     const cfg = adapter?.ranges || window.AppConfig?.ranges?.[FALLBACK_DEVICE_ID];
     const ui = adapter?.ui || {};
     const features = adapter?.features || {};
     applyLandingTexts({ doc, ui });
     if (keymapOnly) {
-      applyAdvancedPanelDensity({ doc, ui });
+      applyAdvancedPanelDensity({ doc, ui, capabilities });
       applyKeymapVariant({ doc, ui, deviceName });
       return;
     }
