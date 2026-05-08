@@ -5082,8 +5082,8 @@ body.page-basic #basicSynapseLayer{ display: block; }
   position: relative;
   font-weight: 900;
   text-transform: uppercase;
-  line-height: 0.85;
-  margin: 10px 0;
+  line-height: 1;
+  margin: clamp(10px, 1.05vh, 16px) 0;
   transition:
     transform 0.6s var(--trans-curve),
     opacity 0.6s var(--trans-curve),
@@ -5132,6 +5132,7 @@ body.page-basic #basicSynapseLayer{ display: block; }
   color: var(--theme-color);
   -webkit-text-stroke: 0;
   transform: translateZ(0) scale(1.68);
+  pointer-events: none;
   letter-spacing: 0;
   text-shadow: 10px 10px 0px rgba(0,0,0,0.05);
 }
@@ -7850,11 +7851,21 @@ body.dark #testtools .group-header {
 /* Rapoo: replace bit6 toggle with polling selector */
 #advancedPanel [data-adv-item="keyScanningRate"][data-adv-control="cycle"]{ display:none; }
 body.device-rapoo #advancedPanel [data-adv-item="keyScanningRate"][data-adv-control="cycle"]{ 
-  display:flex;
-  align-items:center;
-  justify-content:flex-end;
-  gap: 8px;
-  margin-left: auto;
+  display:block;
+  width: 100%;
+  min-width: 0;
+  align-self: stretch;
+  margin-left: 0;
+}
+body.device-rapoo #advancedPanel [data-adv-item="keyScanningRate"][data-adv-control="cycle"] .shutter-row{
+  width: 100%;
+}
+body.device-rapoo #advancedPanel [data-adv-item="keyScanningRate"][data-adv-control="cycle"] .status-indicator{
+  min-width: 92px;
+}
+body.device-rapoo #advancedPanel [data-adv-item="keyScanningRate"][data-adv-control="cycle"] .cycle-text{
+  min-width: 28px;
+  text-align: right;
 }
 body.device-rapoo #advancedPanel [data-adv-item="secondarySurfaceToggle"][data-adv-control="toggle"]{ display:none; }
 body.device-rapoo #advancedPanel [data-adv-item="keyScanningRate"][data-adv-control="select"]{
