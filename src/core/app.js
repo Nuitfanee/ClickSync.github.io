@@ -499,6 +499,29 @@
     "rulePowerDescItem5",
     "rulePowerDescItem6",
   ]);
+  const OVERRIDE_RULE3_LINES = Object.freeze([
+    {
+      textKey: "ruleMacroDescLine1",
+      highlightKeys: Object.freeze([
+        ["ruleMacroKeyRewriteDefaultConfig", "rule-note-key-app"],
+        ["ruleMacroKeyCloseOnboardMemory", "rule-note-key-mode"],
+        ["ruleMacroKeyUnsupportedLogitech", "rule-note-key-warning"],
+        ["ruleMacroKeyOnboardMemory", "rule-note-key-mode"],
+        ["ruleMacroKeyButtonUnavailable", "rule-note-key-risk"],
+        ["ruleMacroKeyBrandLogitech", "rule-note-key-brand"],
+        ["ruleMacroKeyGHUB", "rule-note-key-app"],
+      ]),
+    },
+    {
+      textKey: "ruleMacroDescLine2",
+      highlightKeys: Object.freeze([
+        ["ruleMacroKeyWebDriverSettings", "rule-note-key-app"],
+        ["ruleMacroKeySettingsNoEffect", "rule-note-key-risk"],
+        ["ruleMacroKeyBrandRazer", "rule-note-key-brand"],
+        ["ruleMacroKeySynapse", "rule-note-key-app"],
+      ]),
+    },
+  ]);
 
   let __overrideProgress = 0;
   let __overrideInFlightPromise = null;
@@ -590,6 +613,85 @@
     __overrideRule2Desc.append(introEl, tailEl);
   }
 
+  function __appendOverrideHighlightedText(targetEl, text, terms) {
+    const source = String(text || "");
+    let cursor = 0;
+
+    while (cursor < source.length) {
+      let nextTerm = null;
+      let nextIndex = -1;
+
+      for (const term of terms) {
+        const index = source.indexOf(term.text, cursor);
+        if (index < 0) continue;
+        if (
+          nextIndex < 0 ||
+          index < nextIndex ||
+          (index === nextIndex && term.text.length > nextTerm.text.length)
+        ) {
+          nextIndex = index;
+          nextTerm = term;
+        }
+      }
+
+      if (!nextTerm) {
+        targetEl.append(document.createTextNode(source.slice(cursor)));
+        break;
+      }
+
+      if (nextIndex > cursor) {
+        targetEl.append(document.createTextNode(source.slice(cursor, nextIndex)));
+      }
+
+      const keyEl = document.createElement("span");
+      keyEl.className = `rule-note-key ${nextTerm.className}`;
+      keyEl.textContent = source.slice(nextIndex, nextIndex + nextTerm.text.length);
+      targetEl.appendChild(keyEl);
+      cursor = nextIndex + nextTerm.text.length;
+    }
+  }
+
+  function __renderOverrideRule3Desc() {
+    if (!__overrideRule3Desc) return;
+    const rows = OVERRIDE_RULE3_LINES
+      .map((line, index) => ({
+        index: index + 1,
+        text: __trOverride(line.textKey),
+        terms: line.highlightKeys
+          .map(([key, className]) => ({
+            text: __trOverride(key),
+            className,
+          }))
+          .filter((term) => term.text.trim().length > 0)
+          .sort((a, b) => b.text.length - a.text.length),
+      }))
+      .filter((row) => row.text.trim().length > 0);
+
+    if (rows.length === 0) {
+      __overrideRule3Desc.textContent = __trOverride("ruleMacroDesc");
+      return;
+    }
+
+    __overrideRule3Desc.classList.add("override-rule3-desc");
+    __overrideRule3Desc.textContent = "";
+
+    for (const row of rows) {
+      const itemEl = document.createElement("span");
+      itemEl.className = "rule-note-item";
+
+      const indexEl = document.createElement("span");
+      indexEl.className = "rule-note-index";
+      indexEl.textContent = String(row.index);
+
+      const copyEl = document.createElement("span");
+      copyEl.className = "rule-note-copy";
+      __appendOverrideHighlightedText(copyEl, row.text, row.terms);
+
+      itemEl.append(indexEl, copyEl);
+      __overrideRule3Desc.appendChild(itemEl);
+    }
+  }
+
   function applyOverrideI18n() {
     if (!__overrideLayer) return;
     if (__overrideDescText) __overrideDescText.textContent = __trOverride("descSafety");
@@ -598,7 +700,7 @@
     if (__overrideRule2Title) __overrideRule2Title.textContent = __trOverride("rulePowerTitle");
     __renderOverrideRule2Desc();
     if (__overrideRule3Title) __overrideRule3Title.textContent = __trOverride("ruleMacroTitle");
-    if (__overrideRule3Desc) __overrideRule3Desc.textContent = __trOverride("ruleMacroDesc");
+    __renderOverrideRule3Desc();
     if (__overrideAuthTitle) __overrideAuthTitle.textContent = __trOverride("authTitle");
     if (__overrideAuthSub) __overrideAuthSub.textContent = __trOverride("authSub");
     if (__overrideAuthStatus) {

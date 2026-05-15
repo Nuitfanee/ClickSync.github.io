@@ -76,7 +76,7 @@
                   <span class="rule-power-item">Chaos</span>
                 </span>
               </span>
-              <span class="rule-power-tail">以上品牌的型号均为测试可用型号，其他型号请自行尝试。</span>
+              <span class="rule-power-tail">以上品牌的型号均为测试可用型号，其他型号不做保证。</span>
             </p>
           </div>
         </div>
@@ -85,7 +85,16 @@
           <div class="shutter-code">#03</div>
           <div class="shutter-content">
             <h3 id="overrideRule3Title">使用注意</h3>
-            <p id="overrideRule3Desc">在使用罗技鼠标时请打开板载内存模式，关闭GHUB软件；在使用雷蛇鼠标时请完全退出雷云驱动软件，不然无法生效。</p>
+            <p id="overrideRule3Desc" class="override-rule3-desc">
+              <span class="rule-note-item">
+                <span class="rule-note-index">1</span>
+                <span class="rule-note-copy">使用<span class="rule-note-key rule-note-key-brand">罗技</span>鼠标时，本驱动会自动开启<span class="rule-note-key rule-note-key-mode">板载内存模式</span>，使板载配置生效；开启后 <span class="rule-note-key rule-note-key-app">GHUB</span> 将无法接管设备。如需使用 <span class="rule-note-key rule-note-key-app">GHUB</span>，请先关闭<span class="rule-note-key rule-note-key-mode">板载内存模式</span>。<span class="rule-note-key rule-note-key-warning">不受支持的罗技型号</span>可能因缺少板载配置，出现<span class="rule-note-key rule-note-key-risk">按键不可用</span>等异常，请谨慎尝试；如已出现问题，可<span class="rule-note-key rule-note-key-mode">关闭板载内存模式</span>，或<span class="rule-note-key rule-note-key-app">通过 GHUB 重新写入默认配置</span>。</span>
+              </span>
+              <span class="rule-note-item">
+                <span class="rule-note-index">2</span>
+                <span class="rule-note-copy">使用<span class="rule-note-key rule-note-key-brand">雷蛇</span>鼠标时，请先完全退出<span class="rule-note-key rule-note-key-app">雷云</span>驱动软件，否则<span class="rule-note-key rule-note-key-app">雷云</span>可能覆盖<span class="rule-note-key rule-note-key-app">网页驱动配置</span>，导致<span class="rule-note-key rule-note-key-risk">设置无法生效</span>。</span>
+              </span>
+            </p>
           </div>
         </div>
 
@@ -288,12 +297,12 @@
             </svg>
           </button>
 
-          <button id="reservedTopActionBtn" class="topIconBtn" type="button" aria-label="预留按钮">
+          <a id="reservedTopActionBtn" class="topIconBtn" href="https://nuitfanee.github.io/Solar-Orbital.github.io/" target="_blank" rel="noopener noreferrer" aria-label="打开 Solar Orbital" title="Solar Orbital">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="8"></circle>
               <path d="M18 6l2-2"></path>
             </svg>
-          </button>
+          </a>
         </div>
       </div>
 
