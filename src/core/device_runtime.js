@@ -34,8 +34,16 @@
 
   const STORAGE_KEY = "device.selected";
   const LAST_HID_KEY = "mouse.lastHid";
-  const DEFAULT_DEVICE_ID = "chaos";
-  const VALID_DEVICE_IDS = Object.freeze(["chaos", "rapoo", "atk", "ninjutso", "logitech", "razer"]);
+  const DEFAULT_DEVICE_ID = "rapoo";
+  const VALID_DEVICE_IDS = Object.freeze([
+    // The legacy device id is retained in protocol mapping, but WebHID support is disabled.
+    // "chaos",
+    "rapoo",
+    "atk",
+    "ninjutso",
+    "logitech",
+    "razer",
+  ]);
   const VALID = new Set(VALID_DEVICE_IDS);
   const PROTOCOL_SCRIPT_BY_DEVICE = Object.freeze({
     chaos: "./src/protocols/protocol_api_chaos.js",
@@ -337,6 +345,10 @@
   }
 
   function _passesConnectionFilter(d) {
+    // WebHID support for vendorId 0x1915 is disabled as a whole for now.
+    // If a future supported device uses this VID, replace this blanket VID
+    // rejection with a PID/usage allowlist before enabling its registry entry.
+    if (Number(d?.vendorId) === 0x1915 || _isChaosDevice(d)) return false;
     const vid = Number(d?.vendorId);
     const pid = Number(d?.productId);
     if (vid === NINJUTSO_VENDOR_ID && pid === NINJUTSO_PRODUCT_ID) {
@@ -391,15 +403,19 @@
         { vendorId: NINJUTSO_VENDOR_ID, productId: NINJUTSO_PRODUCT_ID },
       ],
     },
-    {
-      type: "chaos",
-      label: "Chaos",
-      match: _isChaosDevice,
-      filters: [
-        { vendorId: 0x1915, usagePage: 65290 },
-        { vendorId: 0x1915, usagePage: 65280 },
-      ],
-    },
+    // The legacy 0x1915 entry is intentionally excluded from WebHID request
+    // filters so the browser picker will not offer those devices.
+    // For a future supported device that shares vendorId 0x1915, add only that
+    // device's exact PID/usage filters instead of restoring this broad entry.
+    // {
+    //   type: "chaos",
+    //   label: "Chaos",
+    //   match: _isChaosDevice,
+    //   filters: [
+    //     { vendorId: 0x1915, usagePage: 65290 },
+    //     { vendorId: 0x1915, usagePage: 65280 },
+    //   ],
+    // },
     {
       type: "logitech",
       label: "Logitech",
@@ -583,7 +599,11 @@
 
   function _getProtocolScriptSrc(device) {
     const normalized = normalizeDeviceId(device);
-    return _withAssetVersion(PROTOCOL_SCRIPT_BY_DEVICE[normalized] || PROTOCOL_SCRIPT_BY_DEVICE.chaos);
+    return _withAssetVersion(
+      PROTOCOL_SCRIPT_BY_DEVICE[normalized]
+      || PROTOCOL_SCRIPT_BY_DEVICE[DEFAULT_DEVICE_ID]
+      || PROTOCOL_SCRIPT_BY_DEVICE.rapoo
+    );
   }
 
   // ============================================================
@@ -594,7 +614,9 @@
     if (type === "rapoo") return list.filter(_isRapooDevice);
     if (type === "atk") return list.filter(_isAtkDevice);
     if (type === "ninjutso") return list.filter(_isNinjutsoDevice);
-    if (type === "chaos") return list.filter(_isChaosDevice);
+    // The disabled legacy branch is retained for future re-enable, but it must
+    // not return candidates while WebHID support is disabled.
+    // if (type === "chaos") return list.filter(_isChaosDevice);
     if (type === "logitech") return list.filter(_isLogitechDevice);
     if (type === "razer") return list.filter(_isRazerDevice);
     return [];
@@ -606,7 +628,8 @@
       _isRapooDevice(d)
       || _isAtkDevice(d)
       || _isNinjutsoDevice(d)
-      || _isChaosDevice(d)
+      // Legacy 0x1915 matching is disabled for WebHID connection support.
+      // || _isChaosDevice(d)
       || _isLogitechDevice(d)
       || _isRazerDevice(d)
     ));
@@ -788,7 +811,9 @@
     if (vid === NINJUTSO_VENDOR_ID && pid === NINJUTSO_PRODUCT_ID) {
       return _isAllowedNinjutsoName(device) ? "ninjutso" : null;
     }
-    if (vid === 0x1915) return "chaos";
+    // The broad 0x1915 fallback is intentionally disabled with WebHID support.
+    // Future shared-VID devices must be inferred by exact PID/usage rules.
+    // if (vid === 0x1915) return "chaos";
     if (vid === 0x046d) return "logitech";
     if (vid === RAZER_VENDOR_ID && RAZER_SUPPORTED_PIDS.has(pid)) return "razer";
     return null;

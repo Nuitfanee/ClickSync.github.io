@@ -309,7 +309,7 @@
   //   not by adding device-specific branches in app.js.
   // - app.js only consumes adapter features/ui metadata and standard keys.
   const DeviceRuntime = window.DeviceRuntime;
-  const DEFAULT_DEVICE_ID = String(DeviceRuntime?.DEFAULT_DEVICE_ID || "chaos").trim().toLowerCase() || "chaos";
+  const DEFAULT_DEVICE_ID = String(DeviceRuntime?.DEFAULT_DEVICE_ID || "rapoo").trim().toLowerCase() || "rapoo";
 
   function normalizeRuntimeDeviceId(deviceId = undefined) {
     let raw = deviceId;
@@ -497,7 +497,6 @@
     "rulePowerDescItem3",
     "rulePowerDescItem4",
     "rulePowerDescItem5",
-    "rulePowerDescItem6",
   ]);
   const OVERRIDE_RULE3_LINES = Object.freeze([
     {
