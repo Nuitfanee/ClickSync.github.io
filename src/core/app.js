@@ -331,6 +331,28 @@
   let DEVICE_ID = normalizeRuntimeDeviceId();
   let adapter = getRuntimeAdapter(DEVICE_ID);
   let adapterFeatures = adapter?.features || {};
+  let ProtocolApi = window.ProtocolApi || null;
+  let hidApi = window.__HID_API_INSTANCE__ || null;
+  let __cachedDeviceConfig = null;
+  const __hidApiBindings = new WeakSet();
+  let __runtimeBootstrapReady = false;
+
+  const DPI_ABS_MIN = 100;
+  const DPI_ABS_MAX = 45000;
+  const DPI_MIN_DEFAULT = 100;
+  const DPI_MAX_DEFAULT = 8000;
+  let DPI_UI_MAX = 26000;
+  // Legacy/partial callbacks may still report this ceiling even when actual slots are higher.
+  const DPI_SWITCH_CLIP_GUARD_MAX = 26000;
+  let DPI_STEP = Math.max(1, Number(adapter?.ranges?.dpi?.step) || 50);
+  let __capabilities = {
+    dpiSlotCount: 6,
+    maxDpi: DPI_UI_MAX,
+    dpiStep: DPI_STEP,
+    pollingRates: null,
+  };
+  let __capabilitiesDeviceId = normalizeRuntimeDeviceId();
+
   // Single-source runtime helpers for advanced controls:
   // - Resolve source region from adapter.ui.advancedSourceRegionByStdKey.
   // - Query source controls by stdKey (select/range) only.
@@ -1041,6 +1063,455 @@
     animateCycleVisual(container, resolvedRate, displayRate, colorClass, syncForm);
   }
 
+  const SURFACE_FEEL_CYCLE_OPTIONS = normalizeCycleOptions([
+    { val: 0.7, label: "0.7mm", cls: "adv-cycle-mode-0" },
+    { val: 1, label: "1mm", cls: "adv-cycle-mode-1" },
+    { val: 2, label: "2mm", cls: "adv-cycle-mode-2" },
+  ]);
+  const SCROLL_HP_MODE_OPTIONS = normalizeCycleOptions([
+    { val: 0, label: "关闭", cls: "adv-cycle-mode-0" },
+    { val: 2, label: "上滚", cls: "adv-cycle-mode-2" },
+    { val: 3, label: "下滚", cls: "adv-cycle-mode-3" },
+    { val: 1, label: "双向", cls: "adv-cycle-mode-1" },
+  ]);
+  const SCROLL_HP_WINDOW_OPTIONS = normalizeCycleOptions([
+    { val: 100, label: "100", cls: "adv-cycle-mode-0" },
+    { val: 200, label: "200", cls: "adv-cycle-mode-1" },
+    { val: 300, label: "300", cls: "adv-cycle-mode-2" },
+    { val: 400, label: "400", cls: "adv-cycle-mode-3" },
+    { val: 500, label: "500", cls: "adv-cycle-mode-1" },
+    { val: 1000, label: "1000", cls: "adv-cycle-mode-2" },
+  ]);
+  const SPEED_CLICK_MODE_OPTIONS = normalizeCycleOptions([
+    { val: 0, label: "关闭", cls: "adv-cycle-mode-0" },
+    { val: 1, label: "仅左键", cls: "adv-cycle-mode-1" },
+    { val: 2, label: "仅右键", cls: "adv-cycle-mode-2" },
+    { val: 3, label: "左右键", cls: "adv-cycle-mode-3" },
+  ]);
+
+  function parseAdvancedOptionValue(rawValue) {
+    const n = Number(rawValue);
+    return Number.isFinite(n) ? n : String(rawValue ?? "");
+  }
+
+  function advancedOptionValuesEqual(a, b) {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return Math.abs(na - nb) < 0.000001;
+    return String(a ?? "") === String(b ?? "");
+  }
+
+  function findAdvancedOption(options, value) {
+    return (Array.isArray(options) ? options : []).find((item) => advancedOptionValuesEqual(item?.val, value));
+  }
+
+  function resolveAdvancedDiscreteOptions(selectEl, fallbackOptions = []) {
+    const fallback = normalizeCycleOptions(fallbackOptions);
+    const selectOptions = Array.from(selectEl?.options || []);
+    if (!selectOptions.length) return fallback;
+    return selectOptions
+      .map((optionEl, index) => {
+        const val = parseAdvancedOptionValue(optionEl.value);
+        const fallbackOpt = findAdvancedOption(fallback, val) || fallback[index] || {};
+        const label = String(optionEl.textContent || optionEl.label || fallbackOpt.label || optionEl.value || "").trim();
+        return {
+          val,
+          label,
+          cls: normalizeCycleClassName(optionEl.dataset?.cycleClass || fallbackOpt.cls || `adv-cycle-mode-${index % 4}`),
+        };
+      })
+      .filter((item) => item.label !== "");
+  }
+
+  function normalizeAdvancedNearestOptionValue(rawValue, options, fallbackValue = undefined) {
+    const list = Array.isArray(options) ? options : [];
+    if (!list.length) return fallbackValue;
+    const n = Number(rawValue);
+    if (!Number.isFinite(n)) return fallbackValue === undefined ? list[0].val : fallbackValue;
+    return list.reduce((best, item) => (
+      Math.abs(Number(item.val) - n) < Math.abs(Number(best.val) - n) ? item : best
+    ), list[0]).val;
+  }
+
+  function normalizeSurfaceFeelCycleValue(rawValue, options = SURFACE_FEEL_CYCLE_OPTIONS) {
+    return normalizeAdvancedNearestOptionValue(rawValue, options, 1);
+  }
+
+  function normalizeScrollHpModeValue(rawValue, options = SCROLL_HP_MODE_OPTIONS) {
+    const n = Math.round(Number(rawValue));
+    const list = Array.isArray(options) && options.length ? options : SCROLL_HP_MODE_OPTIONS;
+    return list.some((item) => advancedOptionValuesEqual(item.val, n)) ? n : Number(list[0]?.val ?? 0);
+  }
+
+  function normalizeScrollHpWindowValue(rawValue, options = SCROLL_HP_WINDOW_OPTIONS) {
+    return normalizeAdvancedNearestOptionValue(rawValue, options, 100);
+  }
+
+  function normalizeSpeedClickModeValue(rawValue, options = SPEED_CLICK_MODE_OPTIONS) {
+    const n = Math.round(Number(rawValue));
+    const list = Array.isArray(options) && options.length ? options : SPEED_CLICK_MODE_OPTIONS;
+    return list.some((item) => advancedOptionValuesEqual(item.val, n)) ? n : Number(list[0]?.val ?? 0);
+  }
+
+  function speedClickModeFromPair(leftEnabled, rightEnabled) {
+    return (leftEnabled ? 1 : 0) | (rightEnabled ? 2 : 0);
+  }
+
+  function speedClickPairFromMode(rawMode) {
+    const mode = normalizeSpeedClickModeValue(rawMode);
+    return {
+      speedClickLeft: (mode & 1) !== 0,
+      speedClickRight: (mode & 2) !== 0,
+    };
+  }
+
+  function getSpeedClickModeControls() {
+    const cycleBtn = getAdvancedCycleNode("speedClickMode", { region: ADV_REGION_DUAL_RIGHT });
+    const selectEl = getAdvancedSelectControl("speedClickMode", { region: ADV_REGION_DUAL_RIGHT });
+    return { cycleBtn, selectEl };
+  }
+
+  function readSpeedClickModeFromUi() {
+    const { cycleBtn, selectEl } = getSpeedClickModeControls();
+    const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+    return normalizeSpeedClickModeValue(selectEl?.value || cycleBtn?.dataset?.value, options);
+  }
+
+  function updateSpeedClickModeCycleUI(value, animate = true) {
+    const { cycleBtn, selectEl } = getSpeedClickModeControls();
+    if (!cycleBtn) return undefined;
+    const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+    if (!options.length) return undefined;
+    const normalizedValue = normalizeSpeedClickModeValue(value, options);
+    const opt = findAdvancedOption(options, normalizedValue) || options[0];
+    const defaultVal = options[0]?.val;
+    const colorClass = normalizeCycleClassName(opt.cls || "adv-cycle-mode-0");
+    const syncForm = (nextValue) => {
+      cycleBtn.dataset.value = String(nextValue);
+      cycleBtn.classList.toggle("is-selected", !advancedOptionValuesEqual(nextValue, defaultVal));
+      if (selectEl) selectEl.value = String(nextValue);
+    };
+
+    if (!animate) {
+      commitCycleVisual(cycleBtn, opt.val, opt.label, colorClass, syncForm);
+      return opt.val;
+    }
+
+    rotateCycleCrosshair(cycleBtn);
+    animateCycleVisual(cycleBtn, opt.val, opt.label, colorClass, syncForm);
+    return opt.val;
+  }
+
+  function getSourceCycleByStdKey(stdKey, itemKey = stdKey, fallbackRegion = ADV_REGION_DUAL_RIGHT) {
+    const sourceRegion = getAdvancedSourceRegion(stdKey, fallbackRegion);
+    return getAdvancedCycleNode(itemKey, { region: sourceRegion });
+  }
+
+  function updateAdvancedDiscreteCycleUI(itemKey, {
+    stdKey = itemKey,
+    value = undefined,
+    fallbackRegion = ADV_REGION_DUAL_RIGHT,
+    fallbackOptions = [],
+    normalizeValue = null,
+    animate = true,
+  } = {}) {
+    const container = getSourceCycleByStdKey(stdKey, itemKey, fallbackRegion);
+    if (!container) return undefined;
+    const selectEl = getSourceSelectByStdKey(stdKey, fallbackRegion);
+    const options = resolveAdvancedDiscreteOptions(selectEl, fallbackOptions);
+    if (!options.length) return undefined;
+    const normalizer = typeof normalizeValue === "function"
+      ? normalizeValue
+      : ((raw, list) => normalizeAdvancedNearestOptionValue(raw, list, list[0]?.val));
+    const normalizedValue = normalizer(value, options);
+    const opt = findAdvancedOption(options, normalizedValue) || options[0];
+    const defaultVal = options[0]?.val;
+    const colorClass = normalizeCycleClassName(opt.cls || "adv-cycle-mode-0");
+    const syncForm = (nextValue) => {
+      container.dataset.value = String(nextValue);
+      container.classList.toggle("is-selected", !advancedOptionValuesEqual(nextValue, defaultVal));
+      if (selectEl) selectEl.value = String(nextValue);
+    };
+
+    if (!animate) {
+      commitCycleVisual(container, opt.val, opt.label, colorClass, syncForm);
+      return opt.val;
+    }
+
+    rotateCycleCrosshair(container);
+    animateCycleVisual(container, opt.val, opt.label, colorClass, syncForm);
+    return opt.val;
+  }
+
+  function updateSurfaceFeelCycleUI(value, animate = true) {
+    return updateAdvancedDiscreteCycleUI("surfaceFeel", {
+      stdKey: "surfaceFeel",
+      value,
+      fallbackRegion: ADV_REGION_DUAL_LEFT,
+      fallbackOptions: SURFACE_FEEL_CYCLE_OPTIONS,
+      normalizeValue: normalizeSurfaceFeelCycleValue,
+      animate,
+    });
+  }
+
+  function updateScrollHpModeCycleUI(value, animate = true) {
+    return updateAdvancedDiscreteCycleUI("scrollHpMode", {
+      stdKey: "scrollHpMode",
+      value,
+      fallbackRegion: ADV_REGION_DUAL_RIGHT,
+      fallbackOptions: SCROLL_HP_MODE_OPTIONS,
+      normalizeValue: normalizeScrollHpModeValue,
+      animate,
+    });
+  }
+
+  function bindAdvancedDiscreteCycle({
+    itemKey,
+    stdKey = itemKey,
+    featureKey = "",
+    capabilityKey = "",
+    fallbackRegion = ADV_REGION_DUAL_RIGHT,
+    fallbackOptions = [],
+    normalizeValue = null,
+    updateUi,
+    canWrite = null,
+    afterUpdate = null,
+  } = {}) {
+    const cycleBtn = getSourceCycleByStdKey(stdKey, itemKey, fallbackRegion);
+    const selectEl = getSourceSelectByStdKey(stdKey, fallbackRegion);
+    if (!cycleBtn || !selectEl || !stdKey) return;
+    const bindFlag = `${itemKey}DirectCycleBound`;
+    if (cycleBtn.dataset[bindFlag] === "1") return;
+    cycleBtn.dataset[bindFlag] = "1";
+
+    const update = typeof updateUi === "function"
+      ? updateUi
+      : ((nextValue, animate) => updateAdvancedDiscreteCycleUI(itemKey, {
+        stdKey,
+        value: nextValue,
+        fallbackRegion,
+        fallbackOptions,
+        normalizeValue,
+        animate,
+      }));
+
+    const isWritable = () => {
+      if (!__canWriteAdvancedPanelItem(itemKey)) return false;
+      if (featureKey && !hasFeature(featureKey)) return false;
+      if (capabilityKey && !__capabilityExplicitlySupportsFeature(capabilityKey)) return false;
+      if (cycleBtn.getAttribute("aria-hidden") === "true") return false;
+      if (cycleBtn.getAttribute("aria-disabled") === "true") return false;
+      if (typeof canWrite === "function" && !canWrite()) return false;
+      return true;
+    };
+
+    const commitNext = () => {
+      if (!isWritable()) return;
+      const options = resolveAdvancedDiscreteOptions(selectEl, fallbackOptions);
+      if (!options.length) return;
+      const normalizer = typeof normalizeValue === "function"
+        ? normalizeValue
+        : ((raw, list) => normalizeAdvancedNearestOptionValue(raw, list, list[0]?.val));
+      const currentValue = normalizer(selectEl.value || cycleBtn.dataset.value, options);
+      const currentIdx = Math.max(0, options.findIndex((item) => advancedOptionValuesEqual(item.val, currentValue)));
+      const nextOpt = options[(currentIdx + 1) % options.length];
+      const nextValue = normalizer(nextOpt?.val, options);
+      update(nextValue, true);
+      if (typeof afterUpdate === "function") afterUpdate(nextValue);
+      enqueueDevicePatch({ [stdKey]: nextValue });
+    };
+
+    cycleBtn.addEventListener("click", commitNext);
+    cycleBtn.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      commitNext();
+    });
+    selectEl.addEventListener("change", () => {
+      const options = resolveAdvancedDiscreteOptions(selectEl, fallbackOptions);
+      const normalizer = typeof normalizeValue === "function"
+        ? normalizeValue
+        : ((raw, list) => normalizeAdvancedNearestOptionValue(raw, list, list[0]?.val));
+      const nextValue = normalizer(selectEl.value, options);
+      update(nextValue, false);
+      if (typeof afterUpdate === "function") afterUpdate(nextValue);
+      if (!isWritable()) return;
+      enqueueDevicePatch({ [stdKey]: nextValue });
+    });
+  }
+
+  function readScrollHpModeFromUi() {
+    const modeSelect = getSourceSelectByStdKey("scrollHpMode", ADV_REGION_DUAL_RIGHT);
+    const modeCycle = getSourceCycleByStdKey("scrollHpMode", "scrollHpMode", ADV_REGION_DUAL_RIGHT);
+    const options = resolveAdvancedDiscreteOptions(modeSelect, SCROLL_HP_MODE_OPTIONS);
+    return normalizeScrollHpModeValue(modeSelect?.value || modeCycle?.dataset?.value, options);
+  }
+
+  function getScrollHpWindowControls() {
+    const sourceRegion = getAdvancedSourceRegion("scrollHpWindowMs", ADV_REGION_DUAL_LEFT);
+    const rangeEl = getSourceRangeByStdKey("scrollHpWindowMs", ADV_REGION_DUAL_LEFT);
+    const selectEl = getSourceSelectByStdKey("scrollHpWindowMs", ADV_REGION_DUAL_LEFT);
+    const card = getAdvancedContainerNode("scrollHpWindowMs", { region: sourceRegion, control: "range" });
+    return {
+      sourceRegion,
+      rangeEl,
+      selectEl,
+      card,
+      valueEl: card?.querySelector(".value-readout"),
+      barEl: card?.querySelector(".debounce-bar-wide"),
+    };
+  }
+
+  function syncScrollHpWindowRangeUi(value = undefined) {
+    const { rangeEl, selectEl, valueEl, barEl } = getScrollHpWindowControls();
+    const options = resolveAdvancedDiscreteOptions(selectEl, SCROLL_HP_WINDOW_OPTIONS);
+    if (!options.length) return 100;
+    const currentRaw = value === undefined ? selectEl?.value : value;
+    const nextValue = normalizeScrollHpWindowValue(currentRaw, options);
+    const nextIdx = Math.max(0, options.findIndex((item) => advancedOptionValuesEqual(item.val, nextValue)));
+    if (selectEl) selectEl.value = String(nextValue);
+    if (rangeEl) {
+      rangeEl.min = "0";
+      rangeEl.max = String(Math.max(0, options.length - 1));
+      rangeEl.step = "1";
+      rangeEl.value = String(nextIdx);
+    }
+    if (valueEl) {
+      valueEl.textContent = String(Number(nextValue));
+      valueEl.setAttribute("data-unit", "ms");
+    }
+    if (barEl) {
+      const denom = Math.max(1, options.length - 1);
+      const pct = Math.max(0, Math.min(1, nextIdx / denom));
+      const minW = 4;
+      const maxW = 100;
+      barEl.style.width = `${minW + (pct * (maxW - minW))}px`;
+    }
+    return nextValue;
+  }
+
+  function readScrollHpWindowValueFromRange() {
+    const { rangeEl, selectEl } = getScrollHpWindowControls();
+    const options = resolveAdvancedDiscreteOptions(selectEl, SCROLL_HP_WINDOW_OPTIONS);
+    if (!options.length) return 100;
+    const idx = __clamp(Math.round(Number(rangeEl?.value) || 0), 0, Math.max(0, options.length - 1));
+    return normalizeScrollHpWindowValue(options[idx]?.val, options);
+  }
+
+  function syncScrollHpWindowLock() {
+    const { rangeEl, selectEl } = getScrollHpWindowControls();
+    const locked = !__canWriteAdvancedPanelItem("scrollHpWindowMs")
+      || readScrollHpModeFromUi() === 0;
+    __setSliderLocked(rangeEl, locked);
+    if (selectEl) selectEl.disabled = locked;
+  }
+
+  function initScrollHpWindowRange() {
+    const { rangeEl, selectEl } = getScrollHpWindowControls();
+    if (!rangeEl) return;
+    if (rangeEl.dataset.scrollHpWindowRangeBound === "1") return;
+    rangeEl.dataset.scrollHpWindowRangeBound = "1";
+
+    const preview = () => {
+      const nextValue = readScrollHpWindowValueFromRange();
+      syncScrollHpWindowRangeUi(nextValue);
+      syncScrollHpWindowLock();
+    };
+
+    const commit = () => {
+      if (rangeEl.disabled) return;
+      const nextValue = readScrollHpWindowValueFromRange();
+      syncScrollHpWindowRangeUi(nextValue);
+      syncScrollHpWindowLock();
+      if (!__canWriteAdvancedPanelItem("scrollHpWindowMs")) return;
+      if (readScrollHpModeFromUi() === 0) return;
+      enqueueDevicePatch({ scrollHpWindowMs: nextValue });
+    };
+
+    bindRangeCommit(rangeEl, { onInput: preview, onCommit: commit });
+    selectEl?.addEventListener("change", () => {
+      const nextValue = syncScrollHpWindowRangeUi(selectEl.value);
+      syncScrollHpWindowLock();
+      if (!__canWriteAdvancedPanelItem("scrollHpWindowMs")) return;
+      if (readScrollHpModeFromUi() === 0) return;
+      enqueueDevicePatch({ scrollHpWindowMs: nextValue });
+    });
+  }
+
+  function initSurfaceFeelCycle() {
+    bindAdvancedDiscreteCycle({
+      itemKey: "surfaceFeel",
+      stdKey: "surfaceFeel",
+      featureKey: "hasSurfaceFeel",
+      capabilityKey: "surfaceFeel",
+      fallbackRegion: ADV_REGION_DUAL_LEFT,
+      fallbackOptions: SURFACE_FEEL_CYCLE_OPTIONS,
+      normalizeValue: normalizeSurfaceFeelCycleValue,
+      updateUi: updateSurfaceFeelCycleUI,
+    });
+    const selectEl = getSourceSelectByStdKey("surfaceFeel", ADV_REGION_DUAL_LEFT);
+    updateSurfaceFeelCycleUI(selectEl?.value || 1, false);
+  }
+
+  function initScrollHpControls() {
+    bindAdvancedDiscreteCycle({
+      itemKey: "scrollHpMode",
+      stdKey: "scrollHpMode",
+      featureKey: "hasScrollHp",
+      capabilityKey: "scrollHp",
+      fallbackRegion: ADV_REGION_DUAL_RIGHT,
+      fallbackOptions: SCROLL_HP_MODE_OPTIONS,
+      normalizeValue: normalizeScrollHpModeValue,
+      updateUi: updateScrollHpModeCycleUI,
+      afterUpdate: () => syncScrollHpWindowLock(),
+    });
+    initScrollHpWindowRange();
+    updateScrollHpModeCycleUI(readScrollHpModeFromUi(), false);
+    syncScrollHpWindowRangeUi();
+    syncScrollHpWindowLock();
+  }
+
+  function initSpeedClickModeCycle() {
+    const { cycleBtn, selectEl } = getSpeedClickModeControls();
+    if (!cycleBtn || !selectEl) return;
+    if (cycleBtn.dataset.speedClickModeCycleBound === "1") return;
+    cycleBtn.dataset.speedClickModeCycleBound = "1";
+
+    const isWritable = () => {
+      if (!__canWriteAdvancedPanelItem("speedClickMode")) return false;
+      if (cycleBtn.getAttribute("aria-hidden") === "true") return false;
+      if (cycleBtn.getAttribute("aria-disabled") === "true") return false;
+      return true;
+    };
+
+    const commitMode = (rawValue, animate) => {
+      const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+      const nextValue = normalizeSpeedClickModeValue(rawValue, options);
+      updateSpeedClickModeCycleUI(nextValue, animate);
+      if (!isWritable()) return;
+      enqueueDevicePatch(speedClickPairFromMode(nextValue));
+    };
+
+    const commitNext = () => {
+      if (!isWritable()) return;
+      const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+      if (!options.length) return;
+      const currentValue = normalizeSpeedClickModeValue(selectEl.value || cycleBtn.dataset.value, options);
+      const currentIdx = Math.max(0, options.findIndex((item) => advancedOptionValuesEqual(item.val, currentValue)));
+      const nextOpt = options[(currentIdx + 1) % options.length];
+      commitMode(nextOpt?.val, true);
+    };
+
+    cycleBtn.addEventListener("click", commitNext);
+    cycleBtn.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      commitNext();
+    });
+    selectEl.addEventListener("change", () => commitMode(selectEl.value, false));
+    updateSpeedClickModeCycleUI(readSpeedClickModeFromUi(), false);
+  }
+
   /**
    * Initialize polling rate cycle behavior.
    * Purpose: keep UI and config in sync when polling rate changes.
@@ -1076,7 +1547,12 @@
   }
 
 
-  initKeyScanningRateCycle();
+  function initAdvancedCycleControls() {
+    try { initKeyScanningRateCycle(); } catch (_) {}
+    try { initSurfaceFeelCycle(); } catch (_) {}
+    try { initScrollHpControls(); } catch (_) {}
+    try { initSpeedClickModeCycle(); } catch (_) {}
+  }
 
 
   const DEFAULT_DPI_LIGHT_EFFECT_OPTIONS = [
@@ -2018,14 +2494,18 @@ async function enterAppWithLiquidTransition(origin = null) {
       menu,
       valueEl,
       _lastRect: null,
+      _anchorEl: null,
       position() {
         if (!menu.classList.contains("open")) return;
-        if (!document.body.contains(menu) || !document.body.contains(trigger)) {
+        const anchor = inst._anchorEl && document.body.contains(inst._anchorEl)
+          ? inst._anchorEl
+          : trigger;
+        if (!document.body.contains(menu) || !document.body.contains(anchor)) {
           inst.close();
           return;
         }
 
-        const r = trigger.getBoundingClientRect();
+        const r = anchor.getBoundingClientRect();
         inst._lastRect = r;
 
         const gap = 8;
@@ -2100,6 +2580,8 @@ async function enterAppWithLiquidTransition(origin = null) {
       sync() {
         const selOpt = selectEl.selectedOptions?.[0] || selectEl.options?.[selectEl.selectedIndex];
         valueEl.textContent = selOpt?.textContent ?? selOpt?.label ?? "";
+        trigger.disabled = !!selectEl.disabled;
+        trigger.setAttribute("aria-disabled", selectEl.disabled ? "true" : "false");
 
         const v = String(selectEl.value ?? "");
         Array.from(menu.querySelectorAll(".xSelectOption")).forEach((btn) => {
@@ -2107,8 +2589,14 @@ async function enterAppWithLiquidTransition(origin = null) {
           btn.setAttribute("aria-selected", isSel ? "true" : "false");
         });
       },
-      open() {
-        if (menu.classList.contains("open")) return;
+      open(anchorEl = null) {
+        if (selectEl.disabled) return;
+        inst._anchorEl = anchorEl instanceof Element ? anchorEl : null;
+        inst.sync();
+        if (menu.classList.contains("open")) {
+          inst.position();
+          return;
+        }
         closeAllXSelect(wrap);
         wrap.classList.add("open");
 
@@ -2131,6 +2619,7 @@ async function enterAppWithLiquidTransition(origin = null) {
 
         if (inst._hostPanel) inst._hostPanel.classList.remove("xSelectActive");
         inst._hostPanel = null;
+        inst._anchorEl = null;
         trigger.setAttribute("aria-expanded", "false");
         menu.classList.remove("open");
         menu.style.display = "none";
@@ -2150,10 +2639,12 @@ async function enterAppWithLiquidTransition(origin = null) {
 
     trigger.addEventListener("click", (e) => {
       e.preventDefault();
+      if (selectEl.disabled) return;
       inst.toggle();
     });
 
     trigger.addEventListener("keydown", (e) => {
+      if (selectEl.disabled) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         inst.toggle();
@@ -2359,7 +2850,11 @@ async function enterAppWithLiquidTransition(origin = null) {
     // already surfaced a valid battery value via cfg/onBattery.
     if (__batteryPrimePendingForCurrentSession && __batteryKnownForCurrentSession) return;
     try {
-      await hidApi.requestBattery();
+      const bat = await hidApi.requestBattery();
+      if (normalizeBatteryPercentValue(bat?.batteryPercent) == null) {
+        if (reason) log(window.tr(`电量刷新未返回有效数据(${reason})`, `Battery refresh returned no valid value (${reason})`));
+        return;
+      }
       if (reason) log(window.tr(`已刷新电量(${reason})`, `Battery refreshed (${reason})`));
     } catch (e) {
 
@@ -3799,7 +4294,9 @@ function lockEl(el) {
     const dpiCycle = getAdvancedCycleNode("dpiLightEffect", { region: ADV_REGION_DUAL_RIGHT });
     const receiverCycle = getAdvancedCycleNode("receiverLightEffect", { region: ADV_REGION_DUAL_RIGHT });
     const receiverSlider = getAdvancedRangeInput("sensorAngle", { region: ADV_REGION_DUAL_LEFT });
-    const feelInput = getAdvancedRangeInput("surfaceFeel", { region: ADV_REGION_DUAL_LEFT });
+    const feelSourceRegion = getAdvancedSourceRegion("surfaceFeel", ADV_REGION_DUAL_LEFT);
+    const feelInput = getSourceRangeByStdKey("surfaceFeel", ADV_REGION_DUAL_LEFT);
+    const feelCycle = getAdvancedCycleNode("surfaceFeel", { region: feelSourceRegion });
     const staticLedColorPanel = ensureStaticLedColorPanel();
     const primarySurfaceLockState = __resolvePrimarySurfacePerfLockState();
 
@@ -3827,8 +4324,10 @@ function lockEl(el) {
     __setCycleLocked(dpiCycle, lockDpiCycle);
     __setCycleLocked(receiverCycle, lockReceiver);
     __setCycleLocked(staticLedColorPanel, lockStaticColor);
+    __setCycleLocked(feelCycle, lockFeel);
     __setSliderLocked(receiverSlider, lockReceiver);
     __setSliderLocked(feelInput, lockFeel);
+    syncScrollHpWindowLock();
   }
 
   /**
@@ -3975,6 +4474,7 @@ function lockEl(el) {
       debounceBar.style.width = `${widthPx}px`;
     }
 
+    syncScrollHpWindowRangeUi();
 
     const sensorAngleSourceRegion = getAdvancedSourceRegion("sensorAngle", ADV_REGION_DUAL_LEFT);
     const angleInput = getSourceRangeByStdKey("sensorAngle", ADV_REGION_DUAL_LEFT);
@@ -3998,9 +4498,10 @@ function lockEl(el) {
     }
 
 
-    const feelInput = getAdvancedRangeInput("surfaceFeel", { region: ADV_REGION_DUAL_LEFT });
+    const feelSourceRegion = getAdvancedSourceRegion("surfaceFeel", ADV_REGION_DUAL_LEFT);
+    const feelInput = getSourceRangeByStdKey("surfaceFeel", ADV_REGION_DUAL_LEFT);
     const feelCard = getAdvancedContainerNode("surfaceFeel", {
-      region: ADV_REGION_DUAL_LEFT,
+      region: feelSourceRegion,
       control: "range",
     });
     const feelDisp = feelCard?.querySelector(".value-readout");
@@ -4010,6 +4511,8 @@ function lockEl(el) {
       const val = __syncHeightBlockByRangeInput(feelInput, heightBlock);
       if (feelDisp) feelDisp.textContent = String(val);
     }
+    const feelCycleSelect = getSourceSelectByStdKey("surfaceFeel", ADV_REGION_DUAL_LEFT);
+    if (feelCycleSelect) updateSurfaceFeelCycleUI(feelCycleSelect.value, false);
 
     __applyStaticLedColorPanelValue(ensureStaticLedColorPanel(), __staticLedColorValue);
 
@@ -4612,6 +5115,33 @@ function lockEl(el) {
     const cap = getCapabilities() || {};
     if (!Object.prototype.hasOwnProperty.call(cap, key)) return true;
     return cap[key] === true;
+  }
+
+  function __capabilityExplicitlySupportsFeature(key) {
+    const cap = getCapabilities() || {};
+    return Object.prototype.hasOwnProperty.call(cap, key) && cap[key] === true;
+  }
+
+  function __getAdvancedPanelRule(itemKey) {
+    const resolver = window.__DeviceRefactorCore?.resolveAdvancedPanelRegistry;
+    if (typeof resolver !== "function") return null;
+    try {
+      return resolver(adapter)?.[itemKey] || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function __canWriteAdvancedPanelItem(itemKey) {
+    const rule = __getAdvancedPanelRule(itemKey);
+    if (!rule) return true;
+    if (rule.enabled === false) return false;
+
+    const requiredFeatures = Array.isArray(rule.requiresFeatures) ? rule.requiresFeatures : [];
+    if (requiredFeatures.some((key) => !hasFeature(key))) return false;
+
+    const requiredCapabilities = Array.isArray(rule.requiresCapabilities) ? rule.requiresCapabilities : [];
+    return requiredCapabilities.every((key) => __capabilityExplicitlySupportsFeature(key));
   }
 
   function syncSuperstrikeCompositeUi({ value = undefined } = {}) {
@@ -5284,7 +5814,7 @@ function lockEl(el) {
 
 
     const angleInput = getSourceRangeByStdKey("sensorAngle", ADV_REGION_DUAL_LEFT);
-    const feelInput = getAdvancedRangeInput("surfaceFeel", { region: ADV_REGION_DUAL_LEFT });
+    const feelInput = getSourceRangeByStdKey("surfaceFeel", ADV_REGION_DUAL_LEFT);
     if (angleInput && angleInput.dataset.sensorAngleLegacySyncBound !== "1") {
       angleInput.dataset.sensorAngleLegacySyncBound = "1";
       angleInput.addEventListener("input", syncAdvancedPanelUi);
@@ -5386,7 +5916,7 @@ function lockEl(el) {
   // - New device protocol onboarding must complete in DeviceRuntime.ensureProtocolLoaded().
   // - app.js should never hardcode protocol script paths.
   try { await DeviceRuntime?.whenProtocolReady?.(); } catch (e) {}
-  let ProtocolApi = window.ProtocolApi;
+  ProtocolApi = window.ProtocolApi || ProtocolApi;
   if (!ProtocolApi) {
     log(window.tr(
       "未找到 ProtocolApi：请确认已加载对应设备协议脚本",
@@ -5396,13 +5926,12 @@ function lockEl(el) {
   }
 
 
-  let hidApi = window.__HID_API_INSTANCE__;
+  hidApi = window.__HID_API_INSTANCE__ || hidApi;
   if (!hidApi) {
     hidApi = new ProtocolApi.MouseMouseHidApi();
     window.__HID_API_INSTANCE__ = hidApi;
   }
 
-  let __cachedDeviceConfig = null;
   function getCachedDeviceConfig() {
     const reader = window.DeviceReader;
     if (typeof reader?.getCachedConfig === "function") {
@@ -5413,8 +5942,6 @@ function lockEl(el) {
       ? __cachedDeviceConfig
       : null;
   }
-
-  const __hidApiBindings = new WeakSet();
 
   function __bindHidApiEventHandlers(api) {
     if (!api || __hidApiBindings.has(api)) return;
@@ -5556,7 +6083,7 @@ function lockEl(el) {
     await __ensureProtocolBinding(nextDeviceId, { recreateHidApi: true });
     try { __rebuildDeviceScopedUi({ reason: "runtime-switch" }); } catch (_) {}
     try { __refreshKeymapActionCatalog?.(); } catch (_) {}
-    try { initKeyScanningRateCycle(); } catch (_) {}
+    initAdvancedCycleControls();
     try { initAdvancedLightCycles(); } catch (_) {}
     try { initBasicMonolithUI(); } catch (_) {}
     try { initAdvancedPanelUI(); } catch (_) {}
@@ -5711,23 +6238,7 @@ function lockEl(el) {
   const dpiAdvancedToggle = $("#dpiAdvancedToggle");
   const dpiAdvancedTitleHint = $("#dpiAdvancedTitleHint");
 
-  const DPI_ABS_MIN = 100;
-  const DPI_ABS_MAX = 45000;
-  const DPI_MIN_DEFAULT = 100;
-  const DPI_MAX_DEFAULT = 8000;
-  let DPI_UI_MAX = 26000;
-  // Legacy/partial callbacks may still report this ceiling even when actual slots are higher.
-  const DPI_SWITCH_CLIP_GUARD_MAX = 26000;
-  let DPI_STEP = Math.max(1, Number(adapter?.ranges?.dpi?.step) || 50);
-
-
-let __capabilities = {
-  dpiSlotCount: 6,
-  maxDpi: DPI_UI_MAX,
-  dpiStep: DPI_STEP,
-  pollingRates: null,
-};
-let __capabilitiesDeviceId = normalizeRuntimeDeviceId();
+initAdvancedCycleControls();
 
 function __refreshRuntimeDeviceState(deviceId = DeviceRuntime.getSelectedDevice()) {
   const nextDeviceId = normalizeRuntimeDeviceId(deviceId);
@@ -5777,11 +6288,44 @@ function getCapabilities() {
   return __capabilities || {};
 }
 
+function __collectAdvancedCapabilityGateKeys(runtimeAdapter = adapter) {
+  const resolver = window.__DeviceRefactorCore?.resolveAdvancedPanelRegistry;
+  if (typeof resolver !== "function") return new Set();
+  try {
+    const registry = resolver(runtimeAdapter) || {};
+    const keys = new Set();
+    Object.values(registry).forEach((rule) => {
+      const required = Array.isArray(rule?.requiresCapabilities)
+        ? rule.requiresCapabilities
+        : [];
+      required.forEach((key) => {
+        const normalized = String(key || "").trim();
+        if (normalized) keys.add(normalized);
+      });
+    });
+    return keys;
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function __withMissingAdvancedCapabilityGatesCleared(incoming, runtimeAdapter = adapter) {
+  const next = { ...((incoming && typeof incoming === "object") ? incoming : {}) };
+  const gateKeys = __collectAdvancedCapabilityGateKeys(runtimeAdapter);
+  gateKeys.forEach((key) => {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      next[key] = false;
+    }
+  });
+  return next;
+}
+
 function __getNormalizedDpiUiCapabilities(prevCap, incoming, opts = {}) {
   const preserveDpiMax = !!opts.preserveDpiMax;
   const runtimeDeviceId = normalizeRuntimeDeviceId();
   const sameDevice = runtimeDeviceId === __capabilitiesDeviceId;
   const runtimeAdapter = resolveRuntimeDpiAdapter();
+  incoming = __withMissingAdvancedCapabilityGatesCleared(incoming, runtimeAdapter);
   const adapterDpiCfg = runtimeAdapter?.ranges?.dpi || {};
   const adapterDpiPolicy = (adapterDpiCfg?.policy && typeof adapterDpiCfg.policy === "object")
     ? adapterDpiCfg.policy
@@ -7962,7 +8506,7 @@ function labelFromFunckeyKeycode(funckey, keycode) {
       return id >= 1 && id <= resolveKeymapButtonCap();
     }
 
-const defaultMap = {
+    const globalDefaultMap = {
       1: "左键",
       2: "右键",
       3: "中键",
@@ -7970,6 +8514,14 @@ const defaultMap = {
       5: "后退",
       6: "DPI循环",
     };
+    function resolveKeymapDefaultMap() {
+      const profileDefaults = adapter?.ui?.keymap?.defaultLabels;
+      if (!profileDefaults || typeof profileDefaults !== "object" || Array.isArray(profileDefaults)) {
+        return { ...globalDefaultMap };
+      }
+      return { ...globalDefaultMap, ...profileDefaults };
+    }
+    const defaultMap = resolveKeymapDefaultMap();
     const mapping = { ...defaultMap };
 
     /**
@@ -8756,7 +9308,7 @@ function openDrawer(btn) {
   }
 
 
-  const feelInput = getAdvancedRangeInput("surfaceFeel", { region: ADV_REGION_DUAL_LEFT });
+  const feelInput = getSourceRangeByStdKey("surfaceFeel", ADV_REGION_DUAL_LEFT);
   if (feelInput && feelInput.dataset.surfaceFeelRangeLegacyBound !== "1") {
     feelInput.dataset.surfaceFeelRangeLegacyBound = "1";
 
@@ -8768,6 +9320,7 @@ function openDrawer(btn) {
      */
     const commitFeel = () => {
       if (feelInput.disabled) return;
+      if (!__canWriteAdvancedPanelItem("surfaceFeel")) return;
       const v = Number(feelInput.value);
       if (!Number.isFinite(v)) return;
       enqueueDevicePatch({ surfaceFeel: v });
@@ -8834,6 +9387,7 @@ function openDrawer(btn) {
       if (stdKey === "surfaceFeel") {
         if (target.dataset.surfaceFeelRangeLegacyBound === "1") return;
         if (target.disabled) return;
+        if (!__canWriteAdvancedPanelItem("surfaceFeel")) return;
         const value = Number(target.value);
         if (!Number.isFinite(value)) return;
         enqueueDevicePatch({ surfaceFeel: value });
@@ -9153,6 +9707,30 @@ function openDrawer(btn) {
       setCb(getAdvancedToggleInput("rippleControl", { region: ADV_REGION_DUAL_RIGHT }), rippleControl);
     }
 
+    const speedClickLeft = readMerged("speedClickLeft");
+    const speedClickRight = readMerged("speedClickRight");
+    if (speedClickLeft != null || speedClickRight != null) {
+      const currentPair = speedClickPairFromMode(readSpeedClickModeFromUi());
+      updateSpeedClickModeCycleUI(
+        speedClickModeFromPair(
+          speedClickLeft == null ? currentPair.speedClickLeft : !!speedClickLeft,
+          speedClickRight == null ? currentPair.speedClickRight : !!speedClickRight
+        ),
+        false
+      );
+    }
+
+    const scrollHpMode = readMerged("scrollHpMode");
+    if (hasFeature("hasScrollHp") && scrollHpMode != null) {
+      updateScrollHpModeCycleUI(scrollHpMode, false);
+    }
+
+    const scrollHpWindowMs = readMerged("scrollHpWindowMs");
+    if (hasFeature("hasScrollHp") && scrollHpWindowMs != null) {
+      syncScrollHpWindowRangeUi(scrollHpWindowMs);
+    }
+    syncScrollHpWindowLock();
+
     const secondarySurface = readMerged("surfaceModeSecondary");
     if (secondarySurface != null) {
       setCb(getAdvancedToggleInput("secondarySurfaceToggle", { region: ADV_REGION_DUAL_RIGHT }), secondarySurface);
@@ -9183,7 +9761,8 @@ function openDrawer(btn) {
 
     const feelVal = readMerged("surfaceFeel");
     if (feelVal != null) {
-      safeSetValue(getAdvancedRangeInput("surfaceFeel", { region: ADV_REGION_DUAL_LEFT }), feelVal);
+      safeSetValue(getSourceRangeByStdKey("surfaceFeel", ADV_REGION_DUAL_LEFT), feelVal);
+      updateSurfaceFeelCycleUI(feelVal, false);
     }
 
     const staticLedColor = readMerged("staticLedColor");
@@ -9365,6 +9944,10 @@ function openDrawer(btn) {
    */
   async function connectHid(mode = false, isSilent = false) {
 
+    if (!__runtimeBootstrapReady) {
+      __connectPending = { mode, isSilent };
+      return;
+    }
     if (__connectInFlight) {
       __connectPending = { mode, isSilent };
       return;
@@ -9476,6 +10059,7 @@ function openDrawer(btn) {
           controlDevice,
           eventDevice,
           eventMode,
+          transportMode: String(plan?.transportMode || "official").trim().toLowerCase(),
           debugLabel: String(plan?.debugLabel || ""),
           controlSummary,
           eventSummary,
@@ -9521,7 +10105,7 @@ function openDrawer(btn) {
           `collections=${Number(item.collectionCount ?? 0)}`,
           `usagePage=${formatSummaryHex(item.usagePage)}`,
           `expectedUsagePage=${formatSummaryHex(item.controlUsagePage)}`,
-          `featureReportId=${formatSummaryHex(item.webhidFeatureReportId)}`,
+          `reportId=${formatSummaryHex(item.webhidReportId)}`,
           `firstFeature=${Number(item.firstCollectionFeatureReportCount ?? 0)}`,
           `firstInput=${Number(item.firstCollectionInputReportCount ?? 0)}`,
           `usage=${formatSummaryHex(item.usage)}`,
@@ -9709,6 +10293,7 @@ function openDrawer(btn) {
               eventDevice,
               reason: "connect",
               initialReadMode: "full",
+              transportMode: resolvedPlan.transportMode,
               readTimeoutMs: bootstrapReadTimeoutMs,
               readRetry: bootstrapReadRetry,
               // Whether connect flow allows protocol layer to use old-cache fallback.
@@ -10017,6 +10602,14 @@ function openDrawer(btn) {
         }
       });
   };
+
+
+  __runtimeBootstrapReady = true;
+  if (__connectPending && !__connectInFlight) {
+    const pendingConnect = __connectPending;
+    __connectPending = null;
+    setTimeout(() => connectHid(pendingConnect.mode, pendingConnect.isSilent), 0);
+  }
 
 
   if ("requestIdleCallback" in window) {

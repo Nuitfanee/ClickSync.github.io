@@ -765,6 +765,7 @@
     ]),
     surfaceFeel: Object.freeze([
       Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="surfaceFeel"][data-adv-control="range"]' }),
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="surfaceFeel"][data-adv-control="cycle"]', visibleDisplay: "block" }),
     ]),
     motionSync: Object.freeze([
       Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="motionSync"][data-adv-control="toggle"]' }),
@@ -780,6 +781,15 @@
     ]),
     keyScanningRate: Object.freeze([
       Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="keyScanningRate"][data-adv-control="cycle"]', visibleDisplay: "block" }),
+    ]),
+    speedClickMode: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="speedClickMode"][data-adv-control="cycle"]', visibleDisplay: "block" }),
+    ]),
+    scrollHpMode: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="scrollHpMode"][data-adv-control="cycle"]', visibleDisplay: "block" }),
+    ]),
+    scrollHpWindowMs: Object.freeze([
+      Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="scrollHpWindowMs"][data-adv-control="range"]', visibleDisplay: "block" }),
     ]),
     surfaceModePrimary: Object.freeze([
       Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="surfaceModePrimary"][data-adv-control="toggle"]' }),
@@ -919,7 +929,7 @@
     const capabilityDensities = (ui?.advancedPanelCapabilityDensities && typeof ui.advancedPanelCapabilityDensities === "object")
       ? ui.advancedPanelCapabilityDensities
       : {};
-    const capabilityDensity = Object.entries(capabilityDensities).find(([capabilityKey]) => !!capabilityBag[capabilityKey]);
+    const capabilityDensity = Object.entries(capabilityDensities).find(([capabilityKey]) => capabilityBag[capabilityKey] === true);
     if (capabilityDensity) return normalizeAdvancedPanelDensity(capabilityDensity[1]);
     const raw = String(ui?.advancedPanelDensity || "").trim().toLowerCase();
     return normalizeAdvancedPanelDensity(raw);
@@ -1458,8 +1468,9 @@
       restoreInnerHtml(basicHzColumn, "basicHzColumn");
     }
 
-    const feelCard = queryAdvancedContainer(doc, "surfaceFeel", { region: "dual-left", control: "range" });
-    const feelInput = queryAdvancedRangeInput(doc, "surfaceFeel", { region: "dual-left" });
+    const feelSourceRegion = resolveAdvancedSourceRegion(adapter, "surfaceFeel", "dual-left");
+    const feelCard = queryAdvancedContainer(doc, "surfaceFeel", { region: feelSourceRegion, control: "range" });
+    const feelInput = queryAdvancedRangeInput(doc, "surfaceFeel", { region: feelSourceRegion });
     const feelDisp = feelCard?.querySelector(".value-readout");
     const feelName = feelCard?.querySelector(".slider-name");
     const feelSub = feelCard?.querySelector(".slider-sub");
@@ -1479,6 +1490,7 @@
     const heightVizWrap = heightBlock?.closest?.(".height-viz") || heightBlock?.parentElement || null;
 
     const lodItem = queryAdvancedContainer(doc, "surfaceModePrimary", { region: "dual-right", control: "toggle" });
+    const lodCycle = queryAdvancedContainer(doc, "surfaceFeel", { region: "dual-right", control: "cycle" });
     const dpiEditorHint = doc.querySelector("#dpi .card-dpi-editor .cardhead .sub");
     const ledItem = queryAdvancedContainer(doc, "primaryLedFeature", { region: "dual-right", control: "toggle" });
     const advancedDualLeft = queryAdvancedRegion(doc, "dual-left");
@@ -1542,6 +1554,7 @@
     });
 
     applyMetaBlockWithRestore(lodItem, ui?.lod);
+    applyCycleMeta(lodCycle, ui?.lod);
     applyTextWithRestore(dpiEditorHint, ui?.dpiEditorHint);
 
     const isRazer = String(adapter?.id || deviceId || "").trim().toLowerCase() === "razer";
@@ -1592,6 +1605,7 @@
     applyAdvancedCycleStateMeta({ doc, ui });
     const advancedOrders = (ui?.advancedOrders && typeof ui.advancedOrders === "object") ? ui.advancedOrders : {};
     applyOrder(lodItem, "surfaceModePrimary", advancedOrders);
+    applyOrder(lodCycle, "surfaceFeel", advancedOrders);
     applyOrder(ledItem, "primaryLedFeature", advancedOrders);
     applyOrder(b6Item, "secondarySurfaceToggle", advancedOrders);
     applyOrder(dpiLightCycle, "dpiLightEffect", advancedOrders);

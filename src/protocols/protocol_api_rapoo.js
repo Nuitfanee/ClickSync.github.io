@@ -492,6 +492,10 @@
 
     linearCorrection: "linearCorrection",
     linear_correction: "linearCorrection",
+    // RapooHub names 0x08C3 bit1 "waveform correction"; ClickSync keeps
+    // the historical rippleControl state key for the same toggle.
+    waveformCorrection: "rippleControl",
+    waveform_correction: "rippleControl",
 
     currentSlotCount: "currentSlotCount",
     slot_count: "currentSlotCount",
@@ -644,21 +648,19 @@
       return toU8(Math.min(idx, count - 1));
     },
 
-    // 0xC3 混合寄存器逻辑：MotionSync(Bit0) + LinearCorrection(Bit1)
-    // Bit 0: MotionSync (0=On, 1=Off)
-    // Bit 1: LinearCorrection (0=On, 1=Off)
-    // 0x03=Off(11), 0x02=MotionOn(10), 0x01=LinearOn(01), 0x00=BothOn(00)
-    motionLinearCombinedU8(state) {
-      const m = !!state?.motionSync;
-      const l = !!state?.linearCorrection;
+    // Official MOUSE_LINEAR_RIPPLE at 0x08C3:
+    // Bit 0: Linear correction (0=On, 1=Off)
+    // Bit 1: Waveform correction (0=On, 1=Off)
+    // ClickSync's historical rippleControl key maps to waveform correction.
+    linearRippleCombinedU8(state) {
+      const linear = !!state?.linearCorrection;
+      const waveform = !!state?.rippleControl;
       
       let val = 0;
-      // MotionSync: On->0, Off->1 (Bit 0)
-      val |= (m ? 0 : 1);
-      // LinearCorrection: On->0, Off->1 (Bit 1)
-      val |= ((l ? 0 : 1) << 1);
+      val |= (linear ? 0 : 1);
+      val |= ((waveform ? 0 : 1) << 1);
       
-      return val; // 结果只会是 0, 1, 2, 3
+      return val; // 0..3
     },
 
     /**
@@ -895,8 +897,8 @@
     pollingHz: 0x80,
     keyScanningRate: 0x81, // 按键扫描率
     lodHeight: 0x84,
-    // 0x0885：Ripple Control（独立寄存器）
-    rippleControl: 0x85,
+    // Official MOUSE_MOTION: 0x0885
+    motionSync: 0x85,
     sensorAngle: 0xc4,
     glassMode: 0xc5,
     // LED低电量提示 (0xD8)
@@ -905,11 +907,12 @@
     wirelessStrategy: 0xd8,
     debounceMs: 0xc0,
     liftDelayMs: 0xc1,     // 抬起延迟
-    // 0x08C3：MotionSync(Bit0) + LinearCorrection(Bit1) 组合寄存器
-    motionAndLinear: 0xc3,
-    // 兼容性别名（保留，但实际使用 motionAndLinear）
-    motionSync: 0xc3,
+    // Official MOUSE_LINEAR_RIPPLE: 0x08C3
+    // Bit0 = linear correction, Bit1 = waveform correction.
+    linearRipple: 0xc3,
     linearCorrection: 0xc3,
+    // Compatibility key: ClickSync rippleControl == Rapoo waveform correction.
+    rippleControl: 0xc3,
 
     // 0x0060：通信协议地址（Communication Protocol）
     commProtocol: 0x60,
@@ -1095,46 +1098,45 @@
       },
     },
 
-    // 0x0885：Ripple Control（独立寄存器）
+    // Official MOUSE_LINEAR_RIPPLE bit1 at 0x08C3.
+    // UI keeps the historical rippleControl key; RapooHub calls this waveform correction.
     rippleControl: {
       key: "rippleControl",
+      kind: "direct",
+      priority: 50,
+      encode(value, nextState) {
+        return {
+          bank: BANKS.SYSTEM,
+          addr: ADDR.linearRipple, // 0xC3
+          dataBytes: [TRANSFORMERS.linearRippleCombinedU8(nextState)],
+        };
+      },
+    },
+
+    // Official MOUSE_MOTION at 0x0885.
+    motionSync: {
+      key: "motionSync",
       kind: "direct",
       priority: 50,
       encode(value) {
         return {
           bank: BANKS.SYSTEM,
-          addr: ADDR.rippleControl, // 0x85
+          addr: ADDR.motionSync, // 0x85
           dataBytes: [TRANSFORMERS.boolU8(!!value)],
         };
       },
     },
 
-    // 0x08C3：Motion Sync (Bit 0)
-    motionSync: {
-      key: "motionSync",
-      kind: "direct",
-      priority: 50,
-      // 依赖 linearCorrection 共同计算
-      encode(value, nextState) {
-        return {
-          bank: BANKS.SYSTEM,
-          addr: ADDR.motionAndLinear, // 0xC3
-          dataBytes: [TRANSFORMERS.motionLinearCombinedU8(nextState)],
-        };
-      },
-    },
-
-    // 0x08C3：Linear Correction (Bit 1)
+    // Official MOUSE_LINEAR_RIPPLE bit0 at 0x08C3.
     linearCorrection: {
       key: "linearCorrection",
       kind: "direct",
       priority: 50,
-      // 依赖 motionSync 共同计算
       encode(value, nextState) {
         return {
           bank: BANKS.SYSTEM,
-          addr: ADDR.motionAndLinear, // 0xC3
-          dataBytes: [TRANSFORMERS.motionLinearCombinedU8(nextState)],
+          addr: ADDR.linearRipple, // 0xC3
+          dataBytes: [TRANSFORMERS.linearRippleCombinedU8(nextState)],
         };
       },
     },
@@ -2305,22 +2307,22 @@
     console.warn("[Rapoo] 读取 lodHeight 失败", e);
   }
 
-  // 5) Ripple Control (0x85)
+  // 5) Motion Sync / MOUSE_MOTION (0x85)
   try {
-    const rippleCode = await this._readRegisterU8(BANKS.SYSTEM, ADDR.rippleControl);
-    snapshot.rippleControl = (toU8(rippleCode) === 0x01);
+    const motionCode = await this._readRegisterU8(BANKS.SYSTEM, ADDR.motionSync);
+    snapshot.motionSync = (toU8(motionCode) === 0x01);
   } catch (e) {
-    console.warn("[Rapoo] 读取 rippleControl 失败", e);
+    console.warn("[Rapoo] 读取 motionSync 失败", e);
   }
 
-  // 6) MotionSync & LinearCorrection (0xC3)
+  // 6) Linear correction & waveform correction / MOUSE_LINEAR_RIPPLE (0xC3)
   try {
-    const mixedCode = await this._readRegisterU8(BANKS.SYSTEM, ADDR.motionAndLinear);
+    const mixedCode = await this._readRegisterU8(BANKS.SYSTEM, ADDR.linearRipple);
     const mixedVal = toU8(mixedCode);
-    snapshot.motionSync = (mixedVal & 0x01) === 0x00;
-    snapshot.linearCorrection = (mixedVal & 0x02) === 0x00;
+    snapshot.linearCorrection = (mixedVal & 0x01) === 0x00;
+    snapshot.rippleControl = (mixedVal & 0x02) === 0x00;
   } catch (e) {
-    console.warn("[Rapoo] 读取 motion/linear 失败", e);
+    console.warn("[Rapoo] 读取 linearRipple 失败", e);
   }
 
   // 7) 玻璃模式 / 角度 / 去抖 / 抬起延迟
