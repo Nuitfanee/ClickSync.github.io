@@ -334,8 +334,12 @@
   let ProtocolApi = window.ProtocolApi || null;
   let hidApi = window.__HID_API_INSTANCE__ || null;
   let __cachedDeviceConfig = null;
+  let __onboardMemoryModeEnabledByConnectConfirm = false;
+  let __onboardMemoryEmergencyDisableInFlight = false;
   const __hidApiBindings = new WeakSet();
   let __runtimeBootstrapReady = false;
+  const ONBOARD_MEMORY_EMERGENCY_MARK_TTL_MS = 24 * 60 * 60 * 1000;
+  const ONBOARD_MEMORY_EMERGENCY_MARK_PREFIX = "clicksync:onboardMemoryEnabledByConnectConfirm";
 
   const DPI_ABS_MIN = 100;
   const DPI_ABS_MAX = 45000;
@@ -4576,8 +4580,8 @@ function lockEl(el) {
   }
 
   function __getOnboardMemoryEnableConfirmText() {
-    const fallbackZh = "检测到当前罗技设备未开启板载内存模式。\n\n网页驱动需要板载内存模式，才能写入并使用设备配置；你也可以先在 GHUB 中手动开启。\n\n未适配型号可能因板载配置为空出现左右键或其他按键异常；若异常，关闭板载内存模式即可。\n\n确定：开启板载内存模式并进入\n取消：不启用，继续进入";
-    const fallbackEn = "Onboard Memory Mode is currently disabled.\n\nThe web driver needs Onboard Memory Mode to write and use device settings; you can also enable it in GHUB first.\n\nUnsupported models may have empty onboard profiles and lose left/right click or other buttons; if anything behaves abnormally, turn off Onboard Memory Mode.\n\nOK: enable Onboard Memory Mode and enter\nCancel: continue without enabling";
+    const fallbackZh = "检测到当前罗技设备未开启板载内存模式。\n\n网页驱动需要板载内存模式，才能写入并使用设备配置；你也可以先在 GHUB 中手动开启。\n\n未适配型号可能因板载配置为空出现左右键或其他按键异常；若异常，关闭板载内存模式即可。若按键异常，可按 Ctrl+Alt+Shift+O 关闭板载内存模式。\n\n确定：开启板载内存模式并进入；取消：不启用，继续进入";
+    const fallbackEn = "Onboard Memory Mode is currently disabled.\n\nThe web driver needs Onboard Memory Mode to write and use device settings; you can also enable it in GHUB first.\n\nUnsupported models may have empty onboard profiles and lose left/right click or other buttons; if anything behaves abnormally, turn off Onboard Memory Mode. If buttons behave abnormally, press Ctrl+Alt+Shift+O to turn off Onboard Memory Mode.\n\nOK: enable Onboard Memory Mode and enter; Cancel: continue without enabling";
     const pair = adapter?.ui?.onboardMemoryEnableConfirmText;
     if (Array.isArray(pair)) {
       const zh = String(pair[0] ?? "").trim();
@@ -4586,6 +4590,157 @@ function lockEl(el) {
     }
     const text = String(pair || "").trim();
     return text || window.tr(fallbackZh, fallbackEn);
+  }
+
+  function __hasOnboardMemoryEmergencyHotkeyFeature() {
+    return hasFeature("emergencyDisableOnboardMemoryHotkey");
+  }
+
+  function __getOnboardMemoryEmergencyDeviceKey() {
+    const device = hidApi?.device;
+    if (!device) return "";
+    const vendorId = Number(device.vendorId);
+    const productId = Number(device.productId);
+    const productName = String(device.productName || "").trim().toLowerCase();
+    if (!Number.isFinite(vendorId) || !Number.isFinite(productId) || !productName) return "";
+    return [
+      vendorId.toString(16).padStart(4, "0"),
+      productId.toString(16).padStart(4, "0"),
+      productName,
+    ].join(":");
+  }
+
+  function __getOnboardMemoryEmergencyMarkerKey(deviceKey = __getOnboardMemoryEmergencyDeviceKey()) {
+    return deviceKey ? `${ONBOARD_MEMORY_EMERGENCY_MARK_PREFIX}:${deviceKey}` : "";
+  }
+
+  function __clearOnboardMemoryEmergencyMarker(deviceKey = __getOnboardMemoryEmergencyDeviceKey()) {
+    const key = __getOnboardMemoryEmergencyMarkerKey(deviceKey);
+    if (!key) return;
+    try {
+      window.localStorage?.removeItem(key);
+    } catch (err) {
+      console.warn("[Logitech] Failed to clear onboard memory mode emergency marker", err);
+    }
+  }
+
+  function __writeOnboardMemoryEmergencyMarker() {
+    const deviceKey = __getOnboardMemoryEmergencyDeviceKey();
+    const key = __getOnboardMemoryEmergencyMarkerKey(deviceKey);
+    if (!key) return false;
+    const now = Date.now();
+    const marker = {
+      enabledByConnectConfirm: true,
+      deviceKey,
+      createdAt: now,
+      expiresAt: now + ONBOARD_MEMORY_EMERGENCY_MARK_TTL_MS,
+    };
+    try {
+      window.localStorage?.setItem(key, JSON.stringify(marker));
+      return true;
+    } catch (err) {
+      console.warn("[Logitech] Failed to write onboard memory mode emergency marker", err);
+      return false;
+    }
+  }
+
+  function __readOnboardMemoryEmergencyMarker() {
+    const key = __getOnboardMemoryEmergencyMarkerKey();
+    if (!key) return false;
+    try {
+      const raw = window.localStorage?.getItem(key);
+      if (!raw) return false;
+      const marker = JSON.parse(raw);
+      const expiresAt = Number(marker?.expiresAt);
+      const valid = marker?.enabledByConnectConfirm === true &&
+        Number.isFinite(expiresAt) &&
+        expiresAt > Date.now();
+      if (!valid) {
+        window.localStorage?.removeItem(key);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      try { window.localStorage?.removeItem(key); } catch (_) {}
+      console.warn("[Logitech] Failed to read onboard memory mode emergency marker", err);
+      return false;
+    }
+  }
+
+  function __markOnboardMemoryEnabledByConnectConfirm() {
+    __onboardMemoryModeEnabledByConnectConfirm = true;
+    __writeOnboardMemoryEmergencyMarker();
+  }
+
+  function __clearOnboardMemoryEmergencyEligibility() {
+    __onboardMemoryModeEnabledByConnectConfirm = false;
+    __clearOnboardMemoryEmergencyMarker();
+  }
+
+  function __syncOnboardMemoryEmergencyEligibilityFromConfig(cfg) {
+    if (!__hasOnboardMemoryEmergencyHotkeyFeature()) return;
+    if (!cfg || typeof cfg !== "object") return;
+    try {
+      if (readStandardValue(cfg, "onboardMemoryMode") === false) {
+        __clearOnboardMemoryEmergencyEligibility();
+      }
+    } catch (err) {
+      console.warn("[Logitech] Failed to sync onboard memory mode emergency marker from config", err);
+    }
+  }
+
+  function __hasOnboardMemoryEmergencyDisableEligibility() {
+    if (!__hasOnboardMemoryEmergencyHotkeyFeature()) return false;
+    if (!isHidOpened()) return false;
+    if (__onboardMemoryModeEnabledByConnectConfirm) return true;
+    if (!__readOnboardMemoryEmergencyMarker()) return false;
+    __onboardMemoryModeEnabledByConnectConfirm = true;
+    return true;
+  }
+
+  function __isOnboardMemoryEmergencyHotkeyEvent(event) {
+    if (!event) return false;
+    if (!event.ctrlKey || !event.altKey || !event.shiftKey || event.metaKey) return false;
+    const key = String(event.key || "").trim().toLowerCase();
+    return event.code === "KeyO" || key === "o";
+  }
+
+  async function __disableOnboardMemoryModeByEmergencyHotkey() {
+    if (__onboardMemoryEmergencyDisableInFlight) return;
+    if (!__hasOnboardMemoryEmergencyDisableEligibility()) return;
+    __onboardMemoryEmergencyDisableInFlight = true;
+    try {
+      if (typeof hidApi?.setOnboardMemoryMode !== "function") {
+        throw new Error("hidApi.setOnboardMemoryMode is not available");
+      }
+      await hidApi.setOnboardMemoryMode(false);
+      __clearOnboardMemoryEmergencyEligibility();
+
+      const cachedCfg = getCachedDeviceConfig();
+      const nextCfg = Object.assign({}, (cachedCfg && typeof cachedCfg === "object") ? cachedCfg : {}, {
+        onboardMemoryMode: false,
+      });
+      __cachedDeviceConfig = nextCfg;
+      try {
+        applyConfigToUi(nextCfg, { trustBatteryFromCfg: false });
+      } catch (syncErr) {
+        console.warn("[Logitech] Failed to sync onboard memory mode UI after emergency disable", syncErr);
+      }
+    } catch (err) {
+      console.warn("[Logitech] Failed to disable onboard memory mode by emergency hotkey", err);
+    } finally {
+      __onboardMemoryEmergencyDisableInFlight = false;
+    }
+  }
+
+  function __handleOnboardMemoryEmergencyHotkey(event) {
+    if (!__isOnboardMemoryEmergencyHotkeyEvent(event)) return;
+    if (event.repeat) return;
+    if (!__onboardMemoryEmergencyDisableInFlight && !__hasOnboardMemoryEmergencyDisableEligibility()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (__onboardMemoryEmergencyDisableInFlight) return;
+    void __disableOnboardMemoryModeByEmergencyHotkey();
   }
 
   async function __maybeConfirmEnableOnboardMemoryBeforeEnter(cfg, handshakeSeq) {
@@ -4597,6 +4752,9 @@ function lockEl(el) {
     } catch (err) {
       console.warn("[Logitech] Failed to read onboard memory mode during connect", err);
       return fallbackCfg;
+    }
+    if (onboardMemoryMode === false) {
+      __clearOnboardMemoryEmergencyEligibility();
     }
     if (onboardMemoryMode !== false) return fallbackCfg;
     if (__activeHandshakeSeq !== handshakeSeq) return fallbackCfg;
@@ -4619,6 +4777,7 @@ function lockEl(el) {
 
       // Keep the connect-time UI sync narrow. Enabling OMM may refresh profile data
       // internally, but entry only needs the mode toggle to reflect the accepted write.
+      __markOnboardMemoryEnabledByConnectConfirm();
       const nextCfg = Object.assign({}, fallbackCfg || {}, { onboardMemoryMode: true });
       __cachedDeviceConfig = nextCfg;
       return nextCfg;
@@ -5980,7 +6139,10 @@ function lockEl(el) {
     api.onConfig((cfg) => {
       try {
         if (api !== hidApi) return;
-        if (cfg && typeof cfg === "object") __cachedDeviceConfig = cfg;
+        if (cfg && typeof cfg === "object") {
+          __cachedDeviceConfig = cfg;
+          __syncOnboardMemoryEmergencyEligibilityFromConfig(cfg);
+        }
         const isHandshakePhase = hidConnecting || __activeHandshakeSeq !== 0 || (__connectInFlight && !hidLinked);
         if (isHandshakePhase || !isHidOpened()) return;
         const cfgDeviceName = String(cfg?.deviceName || "").trim();
@@ -6046,6 +6208,8 @@ function lockEl(el) {
 
   function __resetDeviceScopedTransientState() {
     __cachedDeviceConfig = null;
+    __onboardMemoryModeEnabledByConnectConfirm = false;
+    __onboardMemoryEmergencyDisableInFlight = false;
     __resetBatterySessionState({ clearText: true });
     __writesEnabled = false;
     __pendingDevicePatch = null;
@@ -10542,6 +10706,8 @@ function openDrawer(btn) {
     if (!confirm(window.tr("确定要断开当前设备连接", "Are you sure you want to disconnect the current device?"))) return;
     await disconnectHid();
   });
+
+  window.addEventListener("keydown", __handleOnboardMemoryEmergencyHotkey, true);
 
 
   updateDeviceStatus(false);
