@@ -4567,16 +4567,6 @@ function lockEl(el) {
     return ms <= 0 ? 100 : ms;
   }
 
-  let __pendingOnboardMemoryAutoEnableCheck = false;
-
-  function __armOnboardMemoryAutoEnableCheck() {
-    __pendingOnboardMemoryAutoEnableCheck = !!hasFeature("autoEnableOnboardMemoryOnConnect");
-  }
-
-  function __clearOnboardMemoryAutoEnableCheck() {
-    __pendingOnboardMemoryAutoEnableCheck = false;
-  }
-
   function __getOnboardMemoryDisableConfirmText() {
     const text = String(adapter?.ui?.onboardMemoryDisableConfirmText || "").trim();
     return text || window.tr(
@@ -4585,17 +4575,57 @@ function lockEl(el) {
     );
   }
 
-  function __tryAutoEnableOnboardMemoryByConfig(cfg) {
-    if (!__pendingOnboardMemoryAutoEnableCheck) return;
-    __pendingOnboardMemoryAutoEnableCheck = false;
-    if (!hasFeature("autoEnableOnboardMemoryOnConnect")) return;
-    const onboardMemoryMode = readStandardValue(cfg, "onboardMemoryMode");
-    if (onboardMemoryMode == null || !!onboardMemoryMode) return;
-    enqueueDevicePatch({ onboardMemoryMode: true });
-    log(window.tr(
-      "检测到板载内存模式未开启，已自动开启",
-      "Onboard memory mode was disabled and has been auto-enabled"
-    ));
+  function __getOnboardMemoryEnableConfirmText() {
+    const fallbackZh = "检测到当前罗技设备未开启板载内存模式。\n\n网页驱动需要板载内存模式，才能写入并使用设备配置；你也可以先在 GHUB 中手动开启。\n\n未适配型号可能因板载配置为空出现左右键或其他按键异常；若异常，关闭板载内存模式即可。\n\n确定：开启板载内存模式并进入\n取消：不启用，继续进入";
+    const fallbackEn = "Onboard Memory Mode is currently disabled.\n\nThe web driver needs Onboard Memory Mode to write and use device settings; you can also enable it in GHUB first.\n\nUnsupported models may have empty onboard profiles and lose left/right click or other buttons; if anything behaves abnormally, turn off Onboard Memory Mode.\n\nOK: enable Onboard Memory Mode and enter\nCancel: continue without enabling";
+    const pair = adapter?.ui?.onboardMemoryEnableConfirmText;
+    if (Array.isArray(pair)) {
+      const zh = String(pair[0] ?? "").trim();
+      const en = String(pair[1] ?? "").trim();
+      if (zh || en) return window.tr(zh || en, en || zh);
+    }
+    const text = String(pair || "").trim();
+    return text || window.tr(fallbackZh, fallbackEn);
+  }
+
+  async function __maybeConfirmEnableOnboardMemoryBeforeEnter(cfg, handshakeSeq) {
+    const fallbackCfg = (cfg && typeof cfg === "object") ? cfg : null;
+    if (!hasFeature("confirmEnableOnboardMemoryOnConnect")) return fallbackCfg;
+    let onboardMemoryMode;
+    try {
+      onboardMemoryMode = readStandardValue(cfg, "onboardMemoryMode");
+    } catch (err) {
+      console.warn("[Logitech] Failed to read onboard memory mode during connect", err);
+      return fallbackCfg;
+    }
+    if (onboardMemoryMode !== false) return fallbackCfg;
+    if (__activeHandshakeSeq !== handshakeSeq) return fallbackCfg;
+
+    let ok = false;
+    try {
+      ok = confirm(__getOnboardMemoryEnableConfirmText());
+    } catch (err) {
+      console.warn("[Logitech] Failed to show onboard memory mode enable confirmation", err);
+      return fallbackCfg;
+    }
+    if (!ok) return fallbackCfg;
+    if (__activeHandshakeSeq !== handshakeSeq) return fallbackCfg;
+
+    try {
+      if (typeof hidApi?.setOnboardMemoryMode !== "function") {
+        throw new Error("hidApi.setOnboardMemoryMode is not available");
+      }
+      await hidApi.setOnboardMemoryMode(true);
+
+      // Keep the connect-time UI sync narrow. Enabling OMM may refresh profile data
+      // internally, but entry only needs the mode toggle to reflect the accepted write.
+      const nextCfg = Object.assign({}, fallbackCfg || {}, { onboardMemoryMode: true });
+      __cachedDeviceConfig = nextCfg;
+      return nextCfg;
+    } catch (err) {
+      console.warn("[Logitech] Failed to enable onboard memory mode during connect", err);
+      return fallbackCfg;
+    }
   }
 
   const HYPERPOLLING_MODE_OPTIONS = [
@@ -5960,7 +5990,6 @@ function lockEl(el) {
 
         hidLinked = true;
         __writesEnabled = true;
-        __tryAutoEnableOnboardMemoryByConfig(cfg);
       } catch (e) {
         logErr(e, window.tr("搴旂敤閰嶇疆澶辫触", "Apply config failed"));
       }
@@ -9953,7 +9982,6 @@ function openDrawer(btn) {
       return;
     }
     __connectInFlight = true;
-    __clearOnboardMemoryAutoEnableCheck();
     __clearLandingEnterGate();
     try {
       if (hidConnecting) return;
@@ -10282,8 +10310,6 @@ function openDrawer(btn) {
           console.log("HID Open, Handshaking:", displayName);
 
           __writesEnabled = false;
-          __armOnboardMemoryAutoEnableCheck();
-
           if (widgetDeviceName) widgetDeviceName.textContent = displayName;
           if (widgetDeviceMeta) widgetDeviceMeta.textContent = window.tr("正在读取配置...", "Reading configuration...");
 
@@ -10335,16 +10361,25 @@ function openDrawer(btn) {
             updatePollingCycleUI(rate, false);
           }
 
+          let enterCfg = cfg;
+          const onboardPromptCfg = await __maybeConfirmEnableOnboardMemoryBeforeEnter(cfg, handshakeSeq);
+          if (onboardPromptCfg && onboardPromptCfg !== cfg) {
+            enterCfg = onboardPromptCfg;
+            handshakeCfg = onboardPromptCfg;
+            applyConfigToUi(onboardPromptCfg, {
+              trustBatteryFromCfg,
+            });
+          }
           if (document.body.classList.contains("landing-active")) {
-            __prepareLandingEnterGate({ deviceName: displayName, cfg });
+            __prepareLandingEnterGate({ deviceName: displayName, cfg: enterCfg });
             await enterAppWithLiquidTransition(__landingClickOrigin);
           }
 
           __writesEnabled = true;
 
           if (typeof applyKeymapFromCfg === "function") {
-            const cachedCfg = getCachedDeviceConfig();
-            if (cachedCfg) applyKeymapFromCfg(cachedCfg);
+            const keymapCfg = enterCfg !== cfg ? enterCfg : getCachedDeviceConfig();
+            if (keymapCfg) applyKeymapFromCfg(keymapCfg);
           }
           return displayName;
         } finally {
@@ -10403,7 +10438,6 @@ function openDrawer(btn) {
         if (!document.body.classList.contains("landing-active")) {
           __applyDeviceVariantOnce({ deviceName: displayName, cfg: handshakeCfg, keymapOnly: true });
         }
-        __tryAutoEnableOnboardMemoryByConfig(handshakeCfg);
       }
 
 
@@ -10429,7 +10463,6 @@ function openDrawer(btn) {
       // UI entry and protocol handshake are unified in performHandshake; avoid duplicate orchestration here.
 
     } catch (err) {
-      __clearOnboardMemoryAutoEnableCheck();
       __clearLandingEnterGate();
       __activeHandshakeSeq = 0;
       hidConnecting = false;
@@ -10478,7 +10511,6 @@ function openDrawer(btn) {
     if (!hidApi || !hidApi.device) return;
     try {
 
-      __clearOnboardMemoryAutoEnableCheck();
       __clearLandingEnterGate();
       __activeHandshakeSeq = 0;
       __connectPending = null;
