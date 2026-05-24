@@ -3326,6 +3326,11 @@
         const activeProfileSlotIndex = await this.getActiveProfileSlotIndex();
         const profileData = await this._readOnboardProfileRaw(activeProfileSlotIndex);
         const parsed = this._parseOnboardProfile(profileData);
+        // The profile only stores the default DPI slot. The live active slot is
+        // inferred below from the current DPI value, so do not publish these
+        // default-derived values as live state.
+        delete parsed.activeDpiSlotIndex;
+        delete parsed.currentDpi;
         parsed.activeProfileSlotIndex = activeProfileSlotIndex;
         Object.assign(updates, parsed);
 
@@ -3336,10 +3341,16 @@
         );
         Object.assign(updates, perfConfig);
 
-        const dpiStatus = await this._readActiveDpiSlotFromDevice();
+        const dpiStatus = await this._readActiveDpiSlotFromDevice({
+          dpiSlots: parsed.dpiSlotsX || parsed.dpiSlots,
+          dpiSlotCount: parsed.dpiSlotCount,
+          trackedIndex: this._trackedActiveDpiSlotIndex,
+        });
         if (dpiStatus) {
-          updates.activeDpiSlotIndex = dpiStatus.activeDpiSlotIndex;
           updates.currentDpi = dpiStatus.currentDpi;
+          if (Number.isFinite(Number(dpiStatus.activeDpiSlotIndex))) {
+            updates.activeDpiSlotIndex = dpiStatus.activeDpiSlotIndex;
+          }
         }
       } catch (e) {
         console.warn("[Logitech] 读取板载/性能配置失败", e);
@@ -3575,7 +3586,8 @@
     }
 
     // 读取当前激活的DPI档位 (Feature 0x09, Cmd 0x5F)
-    async _readActiveDpiSlotFromDevice() {
+    async _readActiveDpiSlotFromDevice(options = {}) {
+      const opts = isObject(options) ? options : {};
       const featDpi = this._getFeatureIndex("DPI");
       const packet = ProtocolCodec.encode({
         iface: "cmd",
@@ -3597,26 +3609,33 @@
           const currentDpiLow = res[5];
           const currentDpi = (currentDpiHigh << 8) | currentDpiLow;
 
-          let activeDpiSlotIndex = 0;
-          const dpiSlots = this._cfg?.dpiSlotsX || this._cfg?.dpiSlots;
-          if (Array.isArray(dpiSlots) && dpiSlots.length > 0) {
-            // 查找最后一个匹配的slot（因为用户可能从后往前设置相同DPI）
-            // 如果有本地跟踪的slot索引且DPI匹配，优先使用
-            const trackedIndex = this._trackedActiveDpiSlotIndex;
-            if (trackedIndex != null && trackedIndex >= 0 && trackedIndex < dpiSlots.length) {
-              if (dpiSlots[trackedIndex] === currentDpi) {
-                activeDpiSlotIndex = trackedIndex;
-              } else {
-                // 本地跟踪的slot DPI不匹配，说明设备状态已改变，重新匹配
-                for (let i = 0; i < dpiSlots.length; i++) {
-                  if (dpiSlots[i] === currentDpi) {
-                    activeDpiSlotIndex = i;
-                    break;
-                  }
-                }
-              }
+          let activeDpiSlotIndex = null;
+          const sourceSlots = Array.isArray(opts.dpiSlots)
+            ? opts.dpiSlots
+            : (Array.isArray(opts.dpiSlotsX)
+              ? opts.dpiSlotsX
+              : (this._cfg?.dpiSlotsX || this._cfg?.dpiSlots));
+          const maxSlots = Array.isArray(sourceSlots) ? sourceSlots.length : 0;
+          const rawCount = opts.dpiSlotCount != null ? Number(opts.dpiSlotCount) : maxSlots;
+          const slotCount = maxSlots > 0
+            ? clampInt(Number.isFinite(rawCount) ? rawCount : maxSlots, 1, maxSlots)
+            : 0;
+          const dpiSlots = maxSlots > 0 ? sourceSlots.slice(0, slotCount).map(Number) : [];
+
+          if (dpiSlots.length > 0) {
+            const trackedIndexRaw = opts.trackedIndex != null ? opts.trackedIndex : this._trackedActiveDpiSlotIndex;
+            const trackedIndex = Number(trackedIndexRaw);
+
+            if (
+              Number.isInteger(trackedIndex) &&
+              trackedIndex >= 0 &&
+              trackedIndex < dpiSlots.length &&
+              dpiSlots[trackedIndex] === currentDpi
+            ) {
+              activeDpiSlotIndex = trackedIndex;
             } else {
-              // 没有本地跟踪，使用第一个匹配的slot
+              // The firmware only reports the live DPI value, so infer the active slot
+              // from the latest onboard profile table rather than stale cached state.
               for (let i = 0; i < dpiSlots.length; i++) {
                 if (dpiSlots[i] === currentDpi) {
                   activeDpiSlotIndex = i;
