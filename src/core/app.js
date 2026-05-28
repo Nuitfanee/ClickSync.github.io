@@ -52,6 +52,425 @@
    */
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+  /**
+   * Build the right-side background word as a local Kerna-inspired SVG system:
+   * custom rounded-cell glyphs, gooey merging, and springy mouse repulsion.
+   */
+  function initKineticBackgroundWord() {
+    if (window.matchMedia?.("(max-width: 900px)")?.matches) return () => {};
+
+    const NS = "http://www.w3.org/2000/svg";
+    const pageWords = {
+      keys: "KeyMap",
+      dpi: "DpiSet",
+      advanced: "Params",
+      testtools: "Tools",
+    };
+    const wordViewW = 216;
+    const wordMinViewH = 420;
+    const wordViewPadding = 96;
+    const wordTracking = 6;
+    const wordFontSize = 132;
+    const wordBaseline = wordFontSize * .82;
+    const wordGlyphH = wordFontSize;
+    /*
+     * Fixed local font metrics for the background word system.
+     * Do not live-measure these with getComputedTextLength()/getExtentOfChar():
+     * the decorative word must stay identical across pages and font-load timing.
+     */
+    const glyphMetrics = {
+      K: { advance: 76, width: 82, cx: 39 },
+      e: { advance: 60, width: 66, cx: 31 },
+      y: { advance: 66, width: 72, cx: 34 },
+      M: { advance: 92, width: 100, cx: 47 },
+      a: { advance: 63, width: 70, cx: 32 },
+      p: { advance: 68, width: 74, cx: 34 },
+      D: { advance: 82, width: 88, cx: 41 },
+      i: { advance: 32, width: 34, cx: 16 },
+      S: { advance: 66, width: 72, cx: 33 },
+      t: { advance: 44, width: 50, cx: 22 },
+      P: { advance: 76, width: 82, cx: 38 },
+      r: { advance: 47, width: 52, cx: 23 },
+      m: { advance: 88, width: 96, cx: 45 },
+      s: { advance: 60, width: 66, cx: 30 },
+      T: { advance: 72, width: 78, cx: 36 },
+      o: { advance: 64, width: 70, cx: 32 },
+      l: { advance: 30, width: 32, cx: 15 },
+    };
+    const pairKerning = {
+      Ke: -5,
+      ey: -2,
+      yM: 10,
+      Ma: 14,
+      ap: -5,
+      Dp: -5,
+      pi: 0,
+      iS: 10,
+      Se: 5,
+      et: 4,
+      Pa: -3,
+      ar: -4,
+      ra: -2,
+      am: -3,
+      ms: 16,
+      To: -4,
+      oo: 3,
+      ol: 3,
+      ls: -5,
+    };
+    const defaultGlyphMetric = { advance: 66, width: 72, cx: 33 };
+
+    function getGlyphMetric(char) {
+      return glyphMetrics[char] || defaultGlyphMetric;
+    }
+
+    function getStaticWordLayout(word) {
+      let cursor = 0;
+      const chars = [...word];
+      const items = chars.map((char, index) => {
+        const metric = getGlyphMetric(char);
+        const item = {
+          char,
+          x: cursor,
+          width: metric.width,
+          cx: metric.cx,
+        };
+        const pair = `${char}${chars[index + 1] || ""}`;
+        cursor += metric.advance + wordTracking + (pairKerning[pair] || 0);
+        return item;
+      });
+      return {
+        items,
+        axisLength: Math.max(0, cursor - wordTracking),
+      };
+    }
+
+    const maxWordAxisLength = Math.max(
+      ...Object.values(pageWords).filter(Boolean).map((word) => getStaticWordLayout(word).axisLength)
+    );
+    const wordViewH = Math.max(wordMinViewH, maxWordAxisLength + wordViewPadding);
+    const wordViewRatio = wordViewH / wordViewW;
+
+    let currentMount = null;
+    const host = document.createElement("div");
+    host.className = "kinetic-bg-word";
+    host.setAttribute("aria-hidden", "true");
+    host.innerHTML = `
+      <svg viewBox="0 0 84 560" preserveAspectRatio="xMidYMin meet" focusable="false">
+        <defs>
+          <filter id="clicksyncBgGoo" x="-24%" y="-10%" width="148%" height="120%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1.15" result="blur"></feGaussianBlur>
+            <feColorMatrix in="blur" mode="matrix"
+              values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -8"
+              result="goo"></feColorMatrix>
+            <feComposite in="SourceGraphic" in2="goo" operator="atop"></feComposite>
+          </filter>
+        </defs>
+        <g class="kinetic-letters"></g>
+      </svg>
+    `;
+    document.body.appendChild(host);
+
+    const svg = host.querySelector("svg");
+    const letters = host.querySelector(".kinetic-letters");
+    const pointer = { x: -9999, y: -9999, active: false };
+    const glyphs = [];
+    let activeWord = "";
+    let activePageKey = "";
+    let wordAxisLength = 0;
+    let rafId = 0;
+    let lastFrameTime = performance.now();
+    let reduceMotion = false;
+
+    try {
+      reduceMotion = !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    } catch (_) {}
+
+    function makeSvg(name, attrs = {}) {
+      const node = document.createElementNS(NS, name);
+      Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+      return node;
+    }
+
+    function getPlacementAnchor(pageKey) {
+      if (pageKey === "keys") return document.querySelector("#keys .kmCard");
+      if (pageKey === "dpi") return document.querySelector("#dpi .card-dpi-meta") || document.querySelector("#dpi .pagegrid");
+      if (pageKey === "basic") return document.querySelector("#basicMonolith");
+      if (pageKey === "advanced") return document.querySelector("#advancedPanel") || document.querySelector("#advanced");
+      if (pageKey === "testtools") return document.querySelector("#testtools .testtoolsCard") || document.querySelector("#testtools");
+      return document.querySelector("main.stage");
+    }
+
+    function getCurrentPageKey() {
+      let key = (location.hash || "#keys").replace("#", "") || "keys";
+      if (key === "tuning") key = "basic";
+      if (!document.getElementById(key)) key = "keys";
+      return key;
+    }
+
+    function placeHost(pageKey) {
+      const anchor = getPlacementAnchor(pageKey);
+      const grid = currentMount || host.parentElement || document.querySelector(".grid-bg");
+      if (!anchor || !grid) return;
+
+      const anchorRect = anchor.getBoundingClientRect();
+      const gridRect = grid.getBoundingClientRect();
+      const gap = -85;
+      const topOffset = -10;
+      const left = anchorRect.right - gridRect.left + gap;
+      const hostWidth = Math.max(1, host.getBoundingClientRect().width || 186);
+      const ratio = Number.isFinite(wordViewRatio) && wordViewRatio > 0 ? wordViewRatio : (720 / wordViewW);
+      const naturalHeight = hostWidth * ratio;
+      const height = naturalHeight + 6;
+      const rawTop = anchorRect.top - gridRect.top + topOffset;
+      const top = Math.max(24, Math.min(rawTop, window.innerHeight - height - 24));
+
+      host.style.left = `${left}px`;
+      host.style.right = "auto";
+      host.style.top = `${top}px`;
+      host.style.height = `${height}px`;
+    }
+
+    function renderWord(word) {
+      if (!word || word === activeWord) return;
+      activeWord = word;
+      glyphs.length = 0;
+      letters.textContent = "";
+
+      const viewW = wordViewW;
+      const viewH = wordViewH;
+      svg.setAttribute("viewBox", `0 0 ${viewW} ${viewH}`);
+      letters.setAttribute("transform", `translate(${viewW - 30} 54) rotate(90)`);
+      const layout = getStaticWordLayout(word);
+
+      const pendingGlyphs = layout.items.map((item) => {
+        const glyph = makeSvg("g", {
+          class: "kinetic-glyph",
+          "data-char": item.char,
+        });
+
+        const shadow = makeSvg("text", {
+          class: "kinetic-text-shadow",
+          x: 7,
+          y: wordBaseline + 9,
+        });
+        shadow.textContent = item.char;
+        glyph.appendChild(shadow);
+
+        const main = makeSvg("text", {
+          class: "kinetic-text-main",
+          x: 0,
+          y: wordBaseline,
+        });
+        main.textContent = item.char;
+        glyph.appendChild(main);
+
+        letters.appendChild(glyph);
+        return { glyph, item };
+      });
+
+      pendingGlyphs.forEach(({ glyph, item }) => {
+        const baseX = item.x;
+
+        glyphs.push({
+          el: glyph,
+          glyphW: item.width,
+          glyphH: wordGlyphH,
+          baseX,
+          baseY: 0,
+          localCx: baseX + item.cx,
+          localCy: wordBaseline - wordGlyphH / 2,
+          x: 0,
+          y: reduceMotion ? 0 : -12,
+          vx: 0,
+          vy: 0,
+        });
+      });
+      wordAxisLength = layout.axisLength;
+
+      requestAnimationFrame(() => {
+        placeHost(activePageKey || getCurrentPageKey());
+        requestTick();
+      });
+    }
+
+    function settleSpring(glyph, targetX, targetY, dt) {
+      if (reduceMotion) {
+        glyph.x = targetX;
+        glyph.y = targetY;
+        glyph.vx = 0;
+        glyph.vy = 0;
+        return;
+      }
+
+      const stiffness = 100;
+      const damping = 10;
+      const mass = 1;
+      const step = Math.min(Math.max(dt, 0.001), 0.032);
+
+      const ax = (stiffness * (targetX - glyph.x) - damping * glyph.vx) / mass;
+      const ay = (stiffness * (targetY - glyph.y) - damping * glyph.vy) / mass;
+
+      glyph.vx += ax * step;
+      glyph.vy += ay * step;
+      glyph.x += glyph.vx * step;
+      glyph.y += glyph.vy * step;
+
+      if (Math.abs(targetX - glyph.x) < 0.02 && Math.abs(glyph.vx) < 0.02) {
+        glyph.x = targetX;
+        glyph.vx = 0;
+      }
+      if (Math.abs(targetY - glyph.y) < 0.02 && Math.abs(glyph.vy) < 0.02) {
+        glyph.y = targetY;
+        glyph.vy = 0;
+      }
+    }
+
+    function deactivatePointer(schedule = true) {
+      pointer.active = false;
+      pointer.x = -9999;
+      pointer.y = -9999;
+      if (schedule) requestTick();
+    }
+
+    function isPointerInViewport() {
+      return (
+        pointer.x >= 0 &&
+        pointer.x <= window.innerWidth &&
+        pointer.y >= 0 &&
+        pointer.y <= window.innerHeight
+      );
+    }
+
+    function handlePointerBoundaryExit(event) {
+      if (!event.relatedTarget) deactivatePointer();
+    }
+
+    function requestTick() {
+      if (rafId) return;
+      lastFrameTime = performance.now();
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function tick(now = performance.now()) {
+      rafId = 0;
+      const dt = (now - lastFrameTime) / 1000;
+      lastFrameTime = now;
+      let localPointer = null;
+      if (pointer.active) {
+        if (!isPointerInViewport()) {
+          deactivatePointer(false);
+        }
+      }
+      if (pointer.active) {
+        try {
+          const hostRect = host.getBoundingClientRect();
+          const inInfluenceBand =
+            pointer.x >= hostRect.left - 80 &&
+            pointer.x <= hostRect.right + 80 &&
+            pointer.y >= hostRect.top - 40 &&
+            pointer.y <= hostRect.bottom + 40;
+          const matrix = inInfluenceBand ? letters.getScreenCTM() : null;
+          if (matrix) {
+            localPointer = new DOMPoint(pointer.x, pointer.y).matrixTransform(matrix.inverse());
+            if (
+              localPointer.x < -60 ||
+              localPointer.x > wordAxisLength + 60 ||
+              localPointer.y < -90 ||
+              localPointer.y > 220
+            ) {
+              localPointer = null;
+            }
+          }
+        } catch (_) {
+          localPointer = null;
+        }
+      }
+
+      const kernaShift = 40;
+      let needsNextFrame = false;
+      glyphs.forEach((glyph) => {
+        let tx = 0;
+        let ty = 0;
+        if (localPointer) {
+          const dx = localPointer.x - glyph.localCx;
+          tx = dx > 0 ? -kernaShift : kernaShift;
+          ty = 0;
+        }
+
+        settleSpring(glyph, tx, ty, dt);
+        if (
+          Math.abs(tx - glyph.x) > 0.02 ||
+          Math.abs(ty - glyph.y) > 0.02 ||
+          Math.abs(glyph.vx) > 0.02 ||
+          Math.abs(glyph.vy) > 0.02
+        ) {
+          needsNextFrame = true;
+        }
+        glyph.el.setAttribute(
+          "transform",
+          `translate(${glyph.baseX + glyph.x} ${glyph.baseY + glyph.y}) ` +
+          `translate(${glyph.glyphW / 2} ${glyph.glyphH / 2}) scale(1) ` +
+          `translate(${-glyph.glyphW / 2} ${-glyph.glyphH / 2})`
+        );
+      });
+      if (needsNextFrame) requestTick();
+    }
+
+    function setPageWord(pageKey) {
+      activePageKey = pageKey || getCurrentPageKey();
+      const nextWord = pageWords[activePageKey] || "";
+      host.hidden = !nextWord;
+      const mount =
+        document.querySelector("#app-layer > .grid-bg") ||
+        document.querySelector(".grid-bg") ||
+        document.querySelector("#app-layer") ||
+        document.body;
+      if (mount && mount !== currentMount) {
+        mount.appendChild(host);
+        currentMount = mount;
+      }
+
+      if (!nextWord) {
+        activeWord = "";
+        wordAxisLength = 0;
+        glyphs.length = 0;
+        letters.textContent = "";
+        deactivatePointer(false);
+        return;
+      }
+
+      placeHost(activePageKey);
+      if (nextWord) renderWord(nextWord);
+    }
+
+    window.addEventListener("pointermove", (event) => {
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+      pointer.active = true;
+      requestTick();
+    }, { passive: true });
+    window.addEventListener("pointerleave", deactivatePointer, { passive: true });
+    window.addEventListener("pointercancel", deactivatePointer, { passive: true });
+    window.addEventListener("blur", deactivatePointer);
+    window.addEventListener("mouseout", handlePointerBoundaryExit, { passive: true });
+    document.addEventListener("mouseleave", deactivatePointer, { passive: true });
+    document.addEventListener("pointerout", handlePointerBoundaryExit, { passive: true });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) deactivatePointer();
+    });
+    window.addEventListener("resize", () => {
+      setPageWord(getCurrentPageKey());
+      requestTick();
+    }, { passive: true });
+
+    setPageWord(getCurrentPageKey());
+    window.addEventListener("beforeunload", () => cancelAnimationFrame(rafId), { once: true });
+    return setPageWord;
+  }
+
+  const setKineticBackgroundWord = initKineticBackgroundWord();
+
   // Advanced panel semantic query contract.
   // - Always query by data-adv-* semantic attributes.
   // - Never re-introduce brand-prefixed ids/selectors in app.js.
@@ -3495,6 +3914,9 @@ function lockEl(el) {
     document.body.classList.toggle("page-advanced", key === "advanced");
     document.body.classList.toggle("page-testtools", key === "testtools");
 
+    if (typeof setKineticBackgroundWord === "function") {
+      setKineticBackgroundWord(key);
+    }
 
     if (key !== "testtools") {
       try {

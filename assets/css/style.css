@@ -1830,9 +1830,6 @@ body.dark .kmPoint.bubble-left.active .kmBubble{
   box-shadow: 6px 6px 0px rgba(0,0,0,0.05);
 }
 
-
-
-
 body.dark .kmDrawer{
   background: #000000;
   border-color: #ffffff;
@@ -2451,6 +2448,7 @@ body.dark .dpiBubbleInner{
   -webkit-backdrop-filter: blur(2px);
   background-clip: padding-box;
   -webkit-background-clip: padding-box;
+  position: relative;
   transform: translateZ(0);
   transition: all .25s var(--ease);
 
@@ -3988,11 +3986,61 @@ body {
     top: 0; left: 0;
     width: 100%; height: 100%;
     background-image: 
-        linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px);
-    background-size: 100px 100px;
+        linear-gradient(rgba(0,0,0,0.028) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,0.028) 1px, transparent 1px);
+    background-size: 50px 50px;
     pointer-events: none;
     z-index: 0;
+}
+
+.grid-bg .kinetic-bg-word{
+    z-index: 0;
+}
+
+.grid-bg::before,
+.grid-bg::after{
+    position: absolute;
+    pointer-events: none;
+    font-family: "Space Grotesk", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .28em;
+    color: rgba(0,0,0,.12);
+}
+
+.grid-bg::before{
+    content: "00 / 01 / 02 / 03 / 04 / 05 / 06";
+    top: 18px;
+    left: 9vw;
+    width: min(560px, 42vw);
+    display: flex;
+    justify-content: space-between;
+    white-space: pre;
+}
+
+.grid-bg::after{
+    content: "00 / 01 / 02 / 03 / 04 / 05 / 06";
+    top: 96px;
+    left: 38px;
+    transform: rotate(90deg);
+    transform-origin: left top;
+    white-space: nowrap;
+}
+
+body.nav-collapsed .grid-bg::after{
+    opacity: 0;
+}
+
+@media (max-width: 1280px){
+    .grid-bg::before{
+        left: 10vw;
+        width: min(460px, 38vw);
+        opacity: .82;
+    }
+
+    .grid-bg::after{
+        left: 32px;
+    }
 }
 
 
@@ -4063,6 +4111,66 @@ body {
                 transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
     will-change: opacity, transform;
     transform: translateZ(0);
+    transform-origin: left center;
+}
+
+/* English inactive outline uses the same perceived gray level as Chinese inactive text. */
+html:not([lang^="zh"]) .nav-item:not(.active) {
+    opacity: 1;
+}
+
+html:not([lang^="zh"]) .nav-item:not(.active) .nav-text {
+    -webkit-text-stroke-color: rgba(0, 0, 0, 0.26);
+}
+
+html:not([lang^="zh"]) .nav-item:not(.active):hover .nav-text {
+    -webkit-text-stroke-color: rgba(0, 0, 0, 0.68);
+}
+
+html:not([lang^="zh"]) body.dark .nav-item:not(.active) .nav-text {
+    -webkit-text-stroke-color: rgba(245, 247, 250, 0.30);
+}
+
+html:not([lang^="zh"]) body.dark .nav-item:not(.active):hover .nav-text {
+    -webkit-text-stroke-color: rgba(245, 247, 250, 0.72);
+}
+
+/* Chinese labels have dense strokes; keep the English outline style unchanged,
+   but render Chinese inactive nav items as muted solid text for legibility. */
+html[lang^="zh"] .nav-item:not(.active) {
+    font-weight: 700;
+    opacity: 1;
+}
+
+html[lang^="zh"] .nav-item:not(.active) .nav-text {
+    color: rgba(0, 0, 0, 0.26);
+    -webkit-text-fill-color: rgba(0, 0, 0, 0.26);
+    -webkit-text-stroke: 0;
+    text-shadow: none;
+    transition: color 0.22s var(--trans-curve),
+                -webkit-text-fill-color 0.22s var(--trans-curve),
+                text-shadow 0.22s var(--trans-curve),
+                transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html[lang^="zh"] .nav-item:not(.active):hover .nav-text {
+    color: rgba(0, 0, 0, 0.68);
+    -webkit-text-fill-color: rgba(0, 0, 0, 0.68);
+    transform: translateX(2px) skewX(-3deg);
+    text-shadow: 5px 5px 0 rgba(0, 0, 0, 0.035);
+}
+
+html[lang^="zh"] body.dark .nav-item:not(.active) .nav-text {
+    color: rgba(245, 247, 250, 0.30);
+    -webkit-text-fill-color: rgba(245, 247, 250, 0.30);
+    -webkit-text-stroke: 0;
+    text-shadow: none;
+}
+
+html[lang^="zh"] body.dark .nav-item:not(.active):hover .nav-text {
+    color: rgba(245, 247, 250, 0.72);
+    -webkit-text-fill-color: rgba(245, 247, 250, 0.72);
+    text-shadow: 5px 5px 0 rgba(255, 255, 255, 0.035);
 }
 
 
@@ -4092,7 +4200,7 @@ body.dark .nav-item {
     -webkit-text-stroke: 0;
     margin: 30px 0;
     letter-spacing: 0;
-    transform: translateX(15px) skewX(-6deg) scale(1.8);
+    transform: translateX(15px);
     will-change: transform, opacity, letter-spacing;
     text-shadow: 8px 8px 0px rgba(0,0,0,0.05);
 }
@@ -4100,13 +4208,14 @@ body.dark .nav-item {
 .nav-item.active:hover {
     opacity: 1;
     -webkit-text-stroke: 0;
-    transform: translateX(15px) skewX(-6deg) scale(1.8);
+    transform: translateX(15px);
     letter-spacing: 0;
 }
 
 .nav-item.active .nav-text {
     color: var(--ink); /* 选中时文字填充颜色 */
     -webkit-text-stroke: 0; /* 选中时移除轮廓线 */
+    transform: skewX(-6deg) scale(1.8);
 }
 
 .nav-item::before {
@@ -4115,8 +4224,15 @@ body.dark .nav-item {
     left: -30px; top: 50%;
     width: 0px; height: 4px;
     background: var(--ink);
-    transition: width 0.4s var(--trans-curve);
+    /* Keep the rule animation independent from the active text scale; otherwise
+       parent scaling visually multiplies width and creates a second growth. */
+    transition: left 0.36s var(--trans-curve),
+                width 0.36s var(--trans-curve),
+                height 0.36s var(--trans-curve),
+                background-color 0.2s var(--trans-curve);
     transform: translateY(-50%);
+    transform-origin: left center;
+    will-change: left, width, height;
 }
 
 /* 切页期间抑制未选中项 hover 位移，避免与 active 大缩放冲突 */
@@ -4127,8 +4243,50 @@ body.nav-switching .nav-item:not(.active):hover {
     opacity: 0.75;
 }
 
+html:not([lang^="zh"]) body.nav-switching .nav-item:not(.active):hover {
+    opacity: 1;
+}
+
+html:not([lang^="zh"]) body.nav-switching .nav-item:not(.active):hover .nav-text {
+    -webkit-text-stroke-color: rgba(0, 0, 0, 0.26);
+}
+
+html:not([lang^="zh"]) body.dark.nav-switching .nav-item:not(.active):hover .nav-text {
+    -webkit-text-stroke-color: rgba(245, 247, 250, 0.30);
+}
+
+html[lang^="zh"] body.nav-switching .nav-item:not(.active):hover {
+    opacity: 1;
+    -webkit-text-stroke: 0;
+}
+
+html[lang^="zh"] body.nav-switching .nav-item:not(.active):hover .nav-text {
+    color: rgba(0, 0, 0, 0.26);
+    -webkit-text-fill-color: rgba(0, 0, 0, 0.26);
+    -webkit-text-stroke: 0;
+    transform: none;
+    text-shadow: none;
+}
+
+html[lang^="zh"] body.dark.nav-switching .nav-item:not(.active):hover .nav-text {
+    color: rgba(245, 247, 250, 0.30);
+    -webkit-text-fill-color: rgba(245, 247, 250, 0.30);
+    -webkit-text-stroke: 0;
+}
+
 .nav-item.active::before {
-    width: 20px;
+    left: -54px;
+    width: 36px;
+    height: 7px;
+}
+
+.nav-item:not(.active):hover::before {
+    width: 14px;
+    background: rgba(0, 0, 0, 0.38);
+}
+
+body.dark .nav-item:not(.active):hover::before {
+    background: rgba(245, 247, 250, 0.44);
 }
 
 /* 侧边栏底部工具栏 */
@@ -5649,6 +5807,123 @@ body.device-rapoo #basicMonolith .basicRapooSwitches{
   position: relative;
   width: 100vw;
   height: 100vh;
+}
+
+#app-layer::after{
+  content: none;
+  display: none;
+}
+
+.kinetic-bg-word{
+  position: absolute;
+  right: clamp(14px, 1.4vw, 28px);
+  top: 50%;
+  z-index: 0;
+  width: clamp(186px, 12.8vw, 276px);
+  height: min(82vh, 820px);
+  pointer-events: none;
+  /*
+   * Keep the SVG source color opaque: the gooey filter thresholds alpha,
+   * so rgba(...,.18) is treated as almost transparent and disappears.
+   * Fade the whole composed SVG here instead.
+   */
+  color: #080808;
+  --kinetic-bg-opacity: .18;
+  opacity: var(--kinetic-bg-opacity);
+  transform: none;
+  transform-origin: center;
+  mix-blend-mode: multiply;
+  contain: layout style;
+  overflow: visible;
+  transition: opacity .55s ease;
+}
+
+body.landing-active .kinetic-bg-word{
+  /*
+   * Keep the SVG mounted while the landing cover is active so text metrics,
+   * gooey filter, and first paint are all warmed up before the app reveal.
+   * Using display:none here causes a late first paint / sudden flash.
+   */
+  --kinetic-bg-opacity: 0;
+}
+
+body.landing-active.landing-reveal .kinetic-bg-word{
+  --kinetic-bg-opacity: .18;
+}
+
+.stagebody{
+  background: transparent;
+}
+
+.stagebody > .page{
+  position: relative;
+  z-index: 1;
+}
+
+.kinetic-bg-word svg{
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.kinetic-bg-word .kinetic-letters{
+  filter: url(#clicksyncBgGoo);
+}
+
+.kinetic-bg-word .kinetic-glyph{
+  transform-box: fill-box;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.kinetic-bg-word :is(.kinetic-text-main, .kinetic-text-shadow){
+  font-family: Inter, "Space Grotesk", "Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
+  font-size: 132px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: -0.13em;
+  fill: currentColor;
+  dominant-baseline: alphabetic;
+  paint-order: fill;
+  transform: scaleX(.94);
+  transform-box: fill-box;
+  transform-origin: center;
+  user-select: none;
+}
+
+.kinetic-bg-word .kinetic-text-main{
+  opacity: 1;
+}
+
+.kinetic-bg-word .kinetic-text-shadow{
+  opacity: .10;
+}
+
+body.dark .kinetic-bg-word{
+  color: #ffffff;
+  --kinetic-bg-opacity: .17;
+  mix-blend-mode: screen;
+}
+
+body.dark.landing-active .kinetic-bg-word{
+  --kinetic-bg-opacity: 0;
+}
+
+body.dark.landing-active.landing-reveal .kinetic-bg-word{
+  --kinetic-bg-opacity: .17;
+}
+
+@media (max-width: 900px){
+  .kinetic-bg-word{
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .kinetic-bg-word .kinetic-letters{
+    filter: none;
+  }
 }
 
 #landing-layer{
@@ -8519,6 +8794,7 @@ body.dark .color-picker-popover {
    ========================================= */
 
 .dpi-panel-redesign {
+  position: relative;
   display: grid;
   grid-template-columns: 1.5fr 1fr 1.5fr;
   gap: 24px;
