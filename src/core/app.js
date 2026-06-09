@@ -181,6 +181,9 @@
     let rafId = 0;
     let lastFrameTime = performance.now();
     let reduceMotion = false;
+    let hostRectCache = null;
+    let lettersMatrixInverseCache = null;
+    let pointerInfluencing = false;
 
     try {
       reduceMotion = !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
@@ -208,27 +211,79 @@
       return key;
     }
 
+    function clampNumber(value, min, max) {
+      return Math.max(min, Math.min(value, max));
+    }
+
+    function refreshWordGeometryCache() {
+      try {
+        hostRectCache = host.getBoundingClientRect();
+        const matrix = letters.getScreenCTM();
+        lettersMatrixInverseCache = matrix ? matrix.inverse() : null;
+      } catch (_) {
+        hostRectCache = null;
+        lettersMatrixInverseCache = null;
+      }
+    }
+
+    function clearWordGeometryCache() {
+      hostRectCache = null;
+      lettersMatrixInverseCache = null;
+      pointerInfluencing = false;
+    }
+
+    function isPointerInInfluenceBand() {
+      const hostRect = hostRectCache;
+      if (!hostRect) return false;
+      return (
+        pointer.x >= hostRect.left - 80 &&
+        pointer.x <= hostRect.right + 80 &&
+        pointer.y >= hostRect.top - 40 &&
+        pointer.y <= hostRect.bottom + 40
+      );
+    }
+
+    function hasActiveGlyphMotion() {
+      return glyphs.some((glyph) => (
+        Math.abs(glyph.x) > 0.02 ||
+        Math.abs(glyph.y) > 0.02 ||
+        Math.abs(glyph.vx) > 0.02 ||
+        Math.abs(glyph.vy) > 0.02
+      ));
+    }
+
     function placeHost(pageKey) {
       const anchor = getPlacementAnchor(pageKey);
       const grid = currentMount || host.parentElement || document.querySelector(".grid-bg");
-      if (!anchor || !grid) return;
+      if (!grid || (pageKey !== "keys" && !anchor)) return;
 
-      const anchorRect = anchor.getBoundingClientRect();
       const gridRect = grid.getBoundingClientRect();
-      const gap = -85;
-      const topOffset = -10;
-      const left = anchorRect.right - gridRect.left + gap;
       const hostWidth = Math.max(1, host.getBoundingClientRect().width || 186);
       const ratio = Number.isFinite(wordViewRatio) && wordViewRatio > 0 ? wordViewRatio : (720 / wordViewW);
       const naturalHeight = hostWidth * ratio;
       const height = naturalHeight + 6;
-      const rawTop = anchorRect.top - gridRect.top + topOffset;
+
+      let left = 0;
+      let rawTop = 0;
+      if (pageKey === "keys") {
+        const viewportRight = clampNumber(window.innerWidth * 0.014, 18, 34);
+        left = window.innerWidth - gridRect.left - viewportRight - hostWidth;
+        rawTop = 44 - gridRect.top;
+      } else {
+        const anchorRect = anchor.getBoundingClientRect();
+        const gap = -85;
+        const topOffset = -10;
+        left = anchorRect.right - gridRect.left + gap;
+        rawTop = anchorRect.top - gridRect.top + topOffset;
+      }
+
       const top = Math.max(24, Math.min(rawTop, window.innerHeight - height - 24));
 
       host.style.left = `${left}px`;
       host.style.right = "auto";
       host.style.top = `${top}px`;
       host.style.height = `${height}px`;
+      refreshWordGeometryCache();
     }
 
     function renderWord(word) {
@@ -330,6 +385,7 @@
       pointer.active = false;
       pointer.x = -9999;
       pointer.y = -9999;
+      pointerInfluencing = false;
       if (schedule) requestTick();
     }
 
@@ -364,15 +420,11 @@
       }
       if (pointer.active) {
         try {
-          const hostRect = host.getBoundingClientRect();
-          const inInfluenceBand =
-            pointer.x >= hostRect.left - 80 &&
-            pointer.x <= hostRect.right + 80 &&
-            pointer.y >= hostRect.top - 40 &&
-            pointer.y <= hostRect.bottom + 40;
-          const matrix = inInfluenceBand ? letters.getScreenCTM() : null;
+          if (!hostRectCache || !lettersMatrixInverseCache) refreshWordGeometryCache();
+          const inInfluenceBand = isPointerInInfluenceBand();
+          const matrix = inInfluenceBand ? lettersMatrixInverseCache : null;
           if (matrix) {
-            localPointer = new DOMPoint(pointer.x, pointer.y).matrixTransform(matrix.inverse());
+            localPointer = new DOMPoint(pointer.x, pointer.y).matrixTransform(matrix);
             if (
               localPointer.x < -60 ||
               localPointer.x > wordAxisLength + 60 ||
@@ -386,6 +438,7 @@
           localPointer = null;
         }
       }
+      pointerInfluencing = !!localPointer;
 
       const kernaShift = 40;
       let needsNextFrame = false;
@@ -436,6 +489,7 @@
         wordAxisLength = 0;
         glyphs.length = 0;
         letters.textContent = "";
+        clearWordGeometryCache();
         deactivatePointer(false);
         return;
       }
@@ -448,7 +502,10 @@
       pointer.x = event.clientX;
       pointer.y = event.clientY;
       pointer.active = true;
-      requestTick();
+      if (!hostRectCache) refreshWordGeometryCache();
+      if (isPointerInInfluenceBand() || pointerInfluencing || hasActiveGlyphMotion()) {
+        requestTick();
+      }
     }, { passive: true });
     window.addEventListener("pointerleave", deactivatePointer, { passive: true });
     window.addEventListener("pointercancel", deactivatePointer, { passive: true });
