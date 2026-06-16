@@ -562,18 +562,18 @@ function encodeAtkDpiPairWord(x, y, dpiMin, dpiMax) {
       return makeValPair(n);
     },
 
-    // 修正高级参数的解析：从 10 字节 Buffer 中还原状态
-    // 数据流：[Debounce(2), Ripple(2), Sleep(2), Motion(2), Linear(2)]
+    // Advanced params decode: restore state from the 10-byte EEPROM block.
+    // Official ATK HUB Compx order:
+    // [Debounce(2), MotionSync(2), Sleep(2), LinearCorrection(2), RippleControl(2)]
     decodeAdvParams(buf) {
       if (!buf || buf.length < 10) return {};
       
       return {
-        debounceMs: buf[0], // Offset 0
-        // 根据实测校准的顺序映射：
-        rippleControl: buf[2] === 0x01,    // Offset 2 是纹波
-        sleepSeconds: buf[4] * 10,         // Offset 4 是休眠 (单位10s)
-        motionSync: buf[6] === 0x01,       // Offset 6 是移动同步
-        linearCorrection: buf[8] === 0x01  // Offset 8 是直线修正
+        debounceMs: buf[0],                 // Offset 0: Debounce
+        motionSync: buf[2] === 0x01,        // Offset 2: MotionSync
+        sleepSeconds: buf[4] * 10,          // Offset 4: SleepTime (unit 10s)
+        linearCorrection: buf[6] === 0x01,  // Offset 6: LinearCorrection
+        rippleControl: buf[8] === 0x01      // Offset 8: RippleControl
       };
     },
 
@@ -777,15 +777,15 @@ function encodeAtkDpiPairWord(x, y, dpiMin, dpiMax) {
         const bLinear = TRANSFORMERS.boolValPair(linear);
         const bRipple = TRANSFORMERS.boolValPair(ripple);
 
-        // 拼接 10 字节数据
-        // 字节顺序（基于协议规范）：
-        //  [Debounce, Ripple, Sleep, Motion, Linear]
+        // Build the 10-byte EEPROM payload.
+        // Official ATK HUB Compx order:
+        // [Debounce, MotionSync, Sleep, LinearCorrection, RippleControl]
         const data = [
-          ...bDebounce, 
-          ...bRipple,  // 位置 1: 实际上是纹波修正
-          ...bSleep,   // 位置 2: 休眠时间
-          ...bMotion,  // 位置 3: 实际上是移动同步
-          ...bLinear   // 位置 4: 实际上是直线修正
+          ...bDebounce,
+          ...bMotion,
+          ...bSleep,
+          ...bLinear,
+          ...bRipple
         ];
 
         // 生成写指令
