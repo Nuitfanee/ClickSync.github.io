@@ -5059,8 +5059,8 @@ function lockEl(el) {
   }
 
   function __getOnboardMemoryEnableConfirmText() {
-    const fallbackZh = "检测到当前罗技设备未开启板载内存模式。\n\n网页驱动需要板载内存模式，才能写入并使用设备配置；你也可以先在 GHUB 中手动开启。\n\n未适配型号可能因板载配置为空出现左右键或其他按键异常；若异常，关闭板载内存模式即可。若按键异常，可按 Ctrl+Alt+Shift+O 关闭板载内存模式。\n\n确定：开启板载内存模式并进入；取消：不启用，继续进入";
-    const fallbackEn = "Onboard Memory Mode is currently disabled.\n\nThe web driver needs Onboard Memory Mode to write and use device settings; you can also enable it in GHUB first.\n\nUnsupported models may have empty onboard profiles and lose left/right click or other buttons; if anything behaves abnormally, turn off Onboard Memory Mode. If buttons behave abnormally, press Ctrl+Alt+Shift+O to turn off Onboard Memory Mode.\n\nOK: enable Onboard Memory Mode and enter; Cancel: continue without enabling";
+    const fallbackZh = "检测到当前罗技设备未开启板载内存模式。\n\n网页驱动需要板载内存模式，才能写入并使用设备配置；你也可以先在 GHUB 中手动开启。\n\nGPW1/2 G502 等旧设备未适配型号请勿尝试打开,否则会导致异常。若按键异常，可按 Ctrl+Alt+Shift+O 关闭板载内存模式。\n\n确定：开启板载内存模式并进入；取消：不启用，继续进入";
+    const fallbackEn = "Onboard Memory Mode is currently disabled.\n\nThe web driver needs Onboard Memory Mode to write and use device settings; you can also enable it in GHUB first.\n\nDo not try to enable this on unsupported older devices such as GPW1/2 or G502; otherwise it may cause abnormal behavior. If buttons behave abnormally, press Ctrl+Alt+Shift+O to turn off Onboard Memory Mode.\n\nOK: enable Onboard Memory Mode and enter; Cancel: continue without enabling";
     const pair = adapter?.ui?.onboardMemoryEnableConfirmText;
     if (Array.isArray(pair)) {
       const zh = String(pair[0] ?? "").trim();
